@@ -18,8 +18,8 @@ derivatives = { path = "../../BacktestingCore/derivatives" }
 databaseschema = { path = "../../databaseschema", optional = true }
 ultra-logger = { path = "../../LoggingEngine/ultra-logger" }
 deadpool = "0.12.1"
-diesel = { version = "2.2.2", features = ["chrono", "uuid", "numeric"], optional = true }
-diesel-async = { version = "0.5.0", features = ["deadpool", "postgres"], optional = true }
+diesel = { version = "2.3.8", features = ["chrono", "uuid", "numeric"], optional = true }
+diesel-async = { version = "0.9.2", features = ["deadpool", "postgres"], optional = true }
 dotenv = "0.15.0"
 futures-util = "0.3.30"
 hmac = "0.12.1"
