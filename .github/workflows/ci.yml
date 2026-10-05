@@ -68,6 +68,14 @@ jobs:
           repository: Mendl-Labs/MessageBrokerEngine
           path: MessageBrokerEngine
 
+      # Cargo fetches the private LoggingEngine git dependency over HTTPS.
+      # actions/checkout clears its own credentials after each checkout, so
+      # route github.com git access through the PAT before any cargo step.
+      - name: Configure git auth for private cargo dependencies
+        env:
+          GH_PAT: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
+
       - name: Install Rust 1.90.0
         uses: dtolnay/rust-toolchain@1.90.0
         with:
