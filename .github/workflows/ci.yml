@@ -39,31 +39,31 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout DataEngineCore
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: DataEngineCore
 
       - name: Checkout LoggingEngine (private dependency -- ultra-logger)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mendl-Labs/LoggingEngine
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           path: LoggingEngine
 
       - name: Checkout BacktestingCore (dependency -- derivatives)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mendl-Labs/BacktestingCore
           path: BacktestingCore
 
       - name: Checkout databaseschema (dependency)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mendl-Labs/databaseschema
           path: databaseschema
 
       - name: Checkout MessageBrokerEngine (dependency -- publisher/subscriber/protocol)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mendl-Labs/MessageBrokerEngine
           path: MessageBrokerEngine
