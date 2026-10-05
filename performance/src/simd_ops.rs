@@ -1,6 +1,6 @@
+use anyhow::Result;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use std::arch::x86_64::*;
-use anyhow::Result;
 use std::sync::Once;
 
 #[derive(Debug)]
@@ -66,6 +66,12 @@ impl SimdCapabilities {
     }
 }
 
+impl Default for SimdMessageParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SimdMessageParser {
     pub fn new() -> Self {
         Self {
@@ -98,7 +104,7 @@ impl SimdMessageParser {
     pub fn parse_messages(&self, buffer: &[u8]) -> Vec<ParsedMessageBatch> {
         // Simple implementation - parse as single message for now
         let mut messages = Vec::new();
-        
+
         if buffer.len() >= 4 {
             let message_type = match buffer[0] {
                 1 => MessageType::Level3,
@@ -106,14 +112,14 @@ impl SimdMessageParser {
                 3 => MessageType::Balance,
                 _ => MessageType::Unknown,
             };
-            
+
             messages.push(ParsedMessageBatch {
                 message_type,
                 timestamp: get_hardware_timestamp(),
                 data: buffer.to_vec(),
             });
         }
-        
+
         messages
     }
 
@@ -127,21 +133,33 @@ impl SimdMessageParser {
     unsafe fn parse_with_avx2(&self, buffer: &[u8]) -> Result<ParsedMessage> {
         let data = _mm256_loadu_si256(buffer.as_ptr() as *const __m256i);
         let timestamp = rdtsc();
-        
+
         // Extract message components using SIMD
         let mut temp_buf = [0u8; 32];
         _mm256_storeu_si256(temp_buf.as_mut_ptr() as *mut __m256i, data);
-        
+
         Ok(ParsedMessage {
             message_type: u32::from_le_bytes([temp_buf[0], temp_buf[1], temp_buf[2], temp_buf[3]]),
             timestamp,
             price: f64::from_le_bytes([
-                temp_buf[8], temp_buf[9], temp_buf[10], temp_buf[11],
-                temp_buf[12], temp_buf[13], temp_buf[14], temp_buf[15]
+                temp_buf[8],
+                temp_buf[9],
+                temp_buf[10],
+                temp_buf[11],
+                temp_buf[12],
+                temp_buf[13],
+                temp_buf[14],
+                temp_buf[15],
             ]),
             quantity: f64::from_le_bytes([
-                temp_buf[16], temp_buf[17], temp_buf[18], temp_buf[19],
-                temp_buf[20], temp_buf[21], temp_buf[22], temp_buf[23]
+                temp_buf[16],
+                temp_buf[17],
+                temp_buf[18],
+                temp_buf[19],
+                temp_buf[20],
+                temp_buf[21],
+                temp_buf[22],
+                temp_buf[23],
             ]),
         })
     }
@@ -151,20 +169,26 @@ impl SimdMessageParser {
     unsafe fn parse_with_sse42(&self, buffer: &[u8]) -> Result<ParsedMessage> {
         let data = _mm_loadu_si128(buffer.as_ptr() as *const __m128i);
         let timestamp = rdtsc();
-        
+
         let mut temp_buf = [0u8; 16];
         _mm_storeu_si128(temp_buf.as_mut_ptr() as *mut __m128i, data);
-        
+
         Ok(ParsedMessage {
             message_type: u32::from_le_bytes([temp_buf[0], temp_buf[1], temp_buf[2], temp_buf[3]]),
             timestamp,
             price: f64::from_le_bytes([
-                temp_buf[4], temp_buf[5], temp_buf[6], temp_buf[7],
-                buffer[12], buffer[13], buffer[14], buffer[15]
+                temp_buf[4],
+                temp_buf[5],
+                temp_buf[6],
+                temp_buf[7],
+                buffer[12],
+                buffer[13],
+                buffer[14],
+                buffer[15],
             ]),
             quantity: f64::from_le_bytes([
-                buffer[16], buffer[17], buffer[18], buffer[19],
-                buffer[20], buffer[21], buffer[22], buffer[23]
+                buffer[16], buffer[17], buffer[18], buffer[19], buffer[20], buffer[21], buffer[22],
+                buffer[23],
             ]),
         })
     }
@@ -174,14 +198,20 @@ impl SimdMessageParser {
             message_type: u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]),
             timestamp: get_hardware_timestamp(),
             price: f64::from_le_bytes([
-                buffer[8], buffer[9], buffer[10], buffer[11],
-                buffer[12], buffer[13], buffer[14], buffer[15]
+                buffer[8], buffer[9], buffer[10], buffer[11], buffer[12], buffer[13], buffer[14],
+                buffer[15],
             ]),
             quantity: f64::from_le_bytes([
-                buffer[16], buffer[17], buffer[18], buffer[19],
-                buffer[20], buffer[21], buffer[22], buffer[23]
+                buffer[16], buffer[17], buffer[18], buffer[19], buffer[20], buffer[21], buffer[22],
+                buffer[23],
             ]),
         })
+    }
+}
+
+impl Default for SimdCalculator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -216,38 +246,46 @@ impl SimdCalculator {
     unsafe fn calculate_vwap_avx2(&self, prices: &[f64], volumes: &[f64]) -> f64 {
         let mut total_value = 0.0;
         let mut total_volume = 0.0;
-        
+
         let chunks = prices.len() / 4;
         let remainder = prices.len() % 4;
-        
+
         for i in 0..chunks {
             let base = i * 4;
             let price_vec = _mm256_loadu_pd(prices.as_ptr().add(base));
             let volume_vec = _mm256_loadu_pd(volumes.as_ptr().add(base));
             let value_vec = _mm256_mul_pd(price_vec, volume_vec);
-            
+
             let mut values = [0.0; 4];
             let mut vols = [0.0; 4];
             _mm256_storeu_pd(values.as_mut_ptr(), value_vec);
             _mm256_storeu_pd(vols.as_mut_ptr(), volume_vec);
-            
+
             total_value += values.iter().sum::<f64>();
             total_volume += vols.iter().sum::<f64>();
         }
-        
+
         // Handle remainder
         for i in (chunks * 4)..prices.len() {
             total_value += prices[i] * volumes[i];
             total_volume += volumes[i];
         }
-        
-        if total_volume > 0.0 { total_value / total_volume } else { 0.0 }
+
+        if total_volume > 0.0 {
+            total_value / total_volume
+        } else {
+            0.0
+        }
     }
 
     fn calculate_vwap_scalar(&self, prices: &[f64], volumes: &[f64]) -> f64 {
         let total_value: f64 = prices.iter().zip(volumes.iter()).map(|(p, v)| p * v).sum();
         let total_volume: f64 = volumes.iter().sum();
-        if total_volume > 0.0 { total_value / total_volume } else { 0.0 }
+        if total_volume > 0.0 {
+            total_value / total_volume
+        } else {
+            0.0
+        }
     }
 }
 

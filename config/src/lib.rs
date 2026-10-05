@@ -1,24 +1,19 @@
 //! Centralized configuration management for DataEngine
-//! 
+//!
 //! Simple, focused configuration handling for the DataEngine with
 //! environment variable support and basic validation.
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use anyhow::Result;
 
 /// Environment types for configuration
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum Environment {
+    #[default]
     Development,
     Testing,
     Production,
-}
-
-impl Default for Environment {
-    fn default() -> Self {
-        Environment::Development
-    }
 }
 
 /// Core DataEngine configuration
@@ -100,7 +95,10 @@ pub struct SecurityConfig {
 impl Default for Config {
     fn default() -> Self {
         let mut topic_routing = HashMap::new();
-        topic_routing.insert("trades".to_string(), "market.data.massive.trades".to_string());
+        topic_routing.insert(
+            "trades".to_string(),
+            "market.data.massive.trades".to_string(),
+        );
 
         Self {
             environment: Environment::Development,
@@ -126,14 +124,12 @@ impl Default for Config {
                     api_url: "https://api.polygon.io".to_string(),
                     max_depth: 0,
                     websocket_token: "".to_string(),
-                    websockets: vec![
-                        WebSocketConfig {
-                            endpoint: "wss://socket.massive.com/crypto".to_string(),
-                            channel: "trade".to_string(),
-                            market_type: None,
-                            testnet: None,
-                        },
-                    ],
+                    websockets: vec![WebSocketConfig {
+                        endpoint: "wss://socket.massive.com/crypto".to_string(),
+                        channel: "trade".to_string(),
+                        market_type: None,
+                        testnet: None,
+                    }],
                     depth: 0,
                     require_auth: false,
                 },
@@ -150,9 +146,7 @@ impl Default for Config {
                 rate_limiting_enabled: true,
                 max_requests_per_minute: 100,
             },
-            topics: vec![
-                "market.data.massive".to_string(),
-            ],
+            topics: vec!["market.data.massive".to_string()],
             topic_routing,
         }
     }
@@ -179,7 +173,9 @@ impl Config {
             self.database.postgres_url = url;
         }
         // REDIS_URL environment variable ignored - Redis removed from system
-        if let Ok(addr) = std::env::var("MESSAGE_BROKER_HOST").or_else(|_| std::env::var("MESSAGE_BROKER_ADDRESS")) {
+        if let Ok(addr) = std::env::var("MESSAGE_BROKER_HOST")
+            .or_else(|_| std::env::var("MESSAGE_BROKER_ADDRESS"))
+        {
             self.message_broker.address = addr;
         }
         if let Ok(port) = std::env::var("MESSAGE_BROKER_PORT") {
@@ -204,14 +200,19 @@ impl Config {
                 return Err(anyhow::anyhow!("Exchange name cannot be empty"));
             }
             if exchange.symbols.is_empty() {
-                return Err(anyhow::anyhow!("Exchange '{}' must have symbols", exchange.name));
+                return Err(anyhow::anyhow!(
+                    "Exchange '{}' must have symbols",
+                    exchange.name
+                ));
             }
         }
         if self.message_broker.address.is_empty() {
             return Err(anyhow::anyhow!("Message broker address cannot be empty"));
         }
         if self.message_broker.port == 0 {
-            return Err(anyhow::anyhow!("Message broker port must be greater than 0"));
+            return Err(anyhow::anyhow!(
+                "Message broker port must be greater than 0"
+            ));
         }
         Ok(())
     }
@@ -233,7 +234,7 @@ impl Config {
         let mut sanitized = self.clone();
         sanitized.database.postgres_url = "***REDACTED***".to_string();
         // redis_url removed - no longer part of DatabaseConfig
-        
+
         serde_json::to_string_pretty(&sanitized)
             .map_err(|e| anyhow::anyhow!("Failed to serialize config to JSON: {}", e))
     }
@@ -260,9 +261,11 @@ impl ConfigManager {
     where
         F: FnOnce(&mut Config) -> Result<()>,
     {
-        let mut config = self.config.write()
+        let mut config = self
+            .config
+            .write()
             .map_err(|e| anyhow::anyhow!("Failed to acquire config lock: {}", e))?;
-        
+
         updater(&mut config)?;
         config.validate()?;
         Ok(())
@@ -299,10 +302,10 @@ mod tests {
     #[test]
     fn test_config_validation() {
         let mut config = Config::default();
-        
+
         // Valid config should pass
         assert!(config.validate().is_ok());
-        
+
         // Invalid config should fail
         config.exchanges.clear();
         assert!(config.validate().is_err());
@@ -370,6 +373,6 @@ mod tests {
     fn test_config_manager_reload() {
         let config = Config::default();
         let manager = ConfigManager::new(config);
-        assert_eq!(manager.reload_if_changed().unwrap(), false);
+        assert!(!manager.reload_if_changed().unwrap());
     }
 }

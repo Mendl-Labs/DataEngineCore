@@ -1,5 +1,5 @@
 //! Core module  
-//! 
+//!
 //! This module contains the core application structure including:
 //! - HostedObject trait and implementation
 //! - Application initialization logic
@@ -15,6 +15,6 @@ pub mod tenant_subscription_limits;
 pub use hosted_object::{HostedObject, HostedObjectTrait};
 pub use subscription_manager::{ConnectionEvent, SubscriptionManager};
 pub use tenant_subscription_limits::{
-    TenantSubscriptionLimiter, SubscriptionTier, TenantSubscriptionStats,
-    GlobalSubscriptionStats, SubscriptionValidation, TierLimits,
+    GlobalSubscriptionStats, SubscriptionTier, SubscriptionValidation, TenantSubscriptionLimiter,
+    TenantSubscriptionStats, TierLimits,
 };

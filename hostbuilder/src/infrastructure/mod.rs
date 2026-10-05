@@ -1,5 +1,5 @@
 //! Infrastructure module
-//! 
+//!
 //! This module contains system infrastructure components including:
 //! - Health monitoring and system checks
 //! - Error handling and resilience patterns
@@ -11,10 +11,10 @@ pub mod resilience;
 
 // Re-export commonly used items
 pub use logging_facade::*;
-pub use monitoring::{SystemHealthMonitor, WebSocketHealthChecker, PerformanceHealthChecker};
 #[cfg(feature = "database")]
 pub use monitoring::DatabaseHealthChecker;
+pub use monitoring::{PerformanceHealthChecker, SystemHealthMonitor, WebSocketHealthChecker};
 pub use resilience::*;
 
 // Re-export logging macros at crate root via this module
-pub use crate::{log_debug, log_info, log_warn, log_error};
+pub use crate::{log_debug, log_error, log_info, log_warn};

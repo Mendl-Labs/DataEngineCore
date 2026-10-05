@@ -1,6 +1,4 @@
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(target_os = "linux")]
 use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
@@ -9,7 +7,9 @@ use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
 pub fn set_thread_affinity(cores: Vec<usize>) -> Result<(), anyhow::Error> {
     let manager = CpuAffinityManager::new();
     if let Some(core) = cores.first() {
-        manager.pin_to_core(*core).map_err(|e| anyhow::anyhow!("Failed to set thread affinity: {}", e))?;
+        manager
+            .pin_to_core(*core)
+            .map_err(|e| anyhow::anyhow!("Failed to set thread affinity: {}", e))?;
     }
     Ok(())
 }
@@ -22,11 +22,17 @@ pub struct CpuAffinityManager {
     total_cores: usize,
 }
 
+impl Default for CpuAffinityManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CpuAffinityManager {
     pub fn new() -> Self {
         let total_cores = num_cpus::get();
         crate::perf_log_info!("Detected {} CPU cores for affinity management", total_cores);
-        
+
         Self {
             core_counter: AtomicUsize::new(0),
             total_cores,
@@ -45,7 +51,11 @@ impl CpuAffinityManager {
     #[cfg(target_os = "windows")]
     pub fn pin_to_core(&self, core_id: usize) -> Result<(), Box<dyn std::error::Error>> {
         if core_id >= self.total_cores {
-            return Err(format!("Core {} exceeds available cores {}", core_id, self.total_cores).into());
+            return Err(format!(
+                "Core {} exceeds available cores {}",
+                core_id, self.total_cores
+            )
+            .into());
         }
 
         // Windows CPU affinity is complex and requires specific APIs
@@ -58,7 +68,11 @@ impl CpuAffinityManager {
     #[cfg(target_os = "linux")]
     pub fn pin_to_core(&self, core_id: usize) -> Result<(), Box<dyn std::error::Error>> {
         if core_id >= self.total_cores {
-            return Err(format!("Core {} exceeds available cores {}", core_id, self.total_cores).into());
+            return Err(format!(
+                "Core {} exceeds available cores {}",
+                core_id, self.total_cores
+            )
+            .into());
         }
 
         unsafe {
@@ -78,7 +92,10 @@ impl CpuAffinityManager {
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     pub fn pin_to_core(&self, core_id: usize) -> Result<(), Box<dyn std::error::Error>> {
-        crate::perf_log_warn!("CPU affinity not supported on this platform, core {} requested", core_id);
+        crate::perf_log_warn!(
+            "CPU affinity not supported on this platform, core {} requested",
+            core_id
+        );
         Ok(())
     }
 
@@ -91,14 +108,16 @@ impl CpuAffinityManager {
     /// Pin message processing threads to dedicated cores
     /// Distributes load across cores 1-N for optimal throughput
     pub fn pin_message_processor(&self) -> Result<usize, Box<dyn std::error::Error>> {
-        let core_id = 1 + (self.core_counter.fetch_add(1, Ordering::Relaxed) % (self.total_cores - 1));
+        let core_id =
+            1 + (self.core_counter.fetch_add(1, Ordering::Relaxed) % (self.total_cores - 1));
         self.pin_to_core(core_id)?;
         Ok(core_id)
     }
 
     /// Pin database writer threads to separate cores to avoid cache conflicts
     pub fn pin_database_writer(&self) -> Result<usize, Box<dyn std::error::Error>> {
-        let core_id = (self.total_cores / 2) + (self.core_counter.fetch_add(1, Ordering::Relaxed) % (self.total_cores / 2));
+        let core_id = (self.total_cores / 2)
+            + (self.core_counter.fetch_add(1, Ordering::Relaxed) % (self.total_cores / 2));
         self.pin_to_core(core_id)?;
         Ok(core_id)
     }
@@ -144,15 +163,15 @@ pub fn set_high_priority() -> Result<(), Box<dyn std::error::Error>> {
 pub fn prefault_stack(size_mb: usize) -> Result<(), Box<dyn std::error::Error>> {
     let size_bytes = size_mb * 1024 * 1024;
     let mut stack_buffer = vec![0u8; size_bytes];
-    
+
     // Touch every page to force allocation
     for i in (0..size_bytes).step_by(4096) {
         stack_buffer[i] = 1;
     }
-    
+
     // Prevent optimization from removing this
     std::hint::black_box(stack_buffer);
-    
+
     crate::perf_log_info!("Prefaulted {} MB of stack memory", size_mb);
     Ok(())
 }

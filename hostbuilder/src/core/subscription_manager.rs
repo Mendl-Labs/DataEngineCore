@@ -47,9 +47,9 @@ use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
+use super::tenant_subscription_limits::{SubscriptionTier, TenantSubscriptionLimiter};
 use crate::infrastructure::logging_facade::MAIN_LOGGER;
 use crate::log_info;
-use super::tenant_subscription_limits::{TenantSubscriptionLimiter, SubscriptionTier};
 
 /// Topics for market data subscriptions
 pub mod topics {
@@ -195,8 +195,11 @@ pub struct SubscriptionManager {
 
 impl SubscriptionManager {
     /// Create a new subscription manager using the given tier-limits policy.
-    pub fn new(broker_address: String, tier_limits: Arc<dyn super::tenant_subscription_limits::TierLimits>) -> Self {
-        let node_id = format!("dataengine-{}", Uuid::new_v4().to_string()[..8].to_string());
+    pub fn new(
+        broker_address: String,
+        tier_limits: Arc<dyn super::tenant_subscription_limits::TierLimits>,
+    ) -> Self {
+        let node_id = format!("dataengine-{}", &Uuid::new_v4().to_string()[..8]);
 
         Self {
             node_id,
@@ -211,7 +214,7 @@ impl SubscriptionManager {
 
     /// Create with a custom tenant limiter
     pub fn with_limiter(broker_address: String, limiter: TenantSubscriptionLimiter) -> Self {
-        let node_id = format!("dataengine-{}", Uuid::new_v4().to_string()[..8].to_string());
+        let node_id = format!("dataengine-{}", &Uuid::new_v4().to_string()[..8]);
 
         Self {
             node_id,
@@ -243,7 +246,7 @@ impl SubscriptionManager {
 
         // Connect to MessageBroker
         let config = PublisherConfig::new(&self.broker_address);
-        let mut publisher = UltraFastPublisher::new(config);
+        let publisher = UltraFastPublisher::new(config);
         publisher
             .connect()
             .await
@@ -254,7 +257,11 @@ impl SubscriptionManager {
         let subscriber = UltraFastSubscriber::new(fastrand::u64(..));
 
         // Subscribe to topics
-        for topic in [topics::SUBSCRIBE, topics::UNSUBSCRIBE, topics::STATUS_REQUEST] {
+        for topic in [
+            topics::SUBSCRIBE,
+            topics::UNSUBSCRIBE,
+            topics::STATUS_REQUEST,
+        ] {
             log_info!(
                 MAIN_LOGGER,
                 "Subscribing to broker topic '{}' via {}",
@@ -276,7 +283,10 @@ impl SubscriptionManager {
 
         // Start subscriber reader loop so incoming publish frames are consumed.
         subscriber.start();
-        log_info!(MAIN_LOGGER, "SubscriptionManager subscriber reader loop started");
+        log_info!(
+            MAIN_LOGGER,
+            "SubscriptionManager subscriber reader loop started"
+        );
 
         self.is_running.store(true, Ordering::Relaxed);
 
@@ -295,8 +305,16 @@ impl SubscriptionManager {
         let tenant_limiter = Arc::clone(&self.tenant_limiter);
 
         tokio::spawn(async move {
-            Self::process_messages(subscriber, connections, publisher, event_tx, node_id, is_running, tenant_limiter)
-                .await;
+            Self::process_messages(
+                subscriber,
+                connections,
+                publisher,
+                event_tx,
+                node_id,
+                is_running,
+                tenant_limiter,
+            )
+            .await;
         });
 
         Ok(())
@@ -327,7 +345,11 @@ impl SubscriptionManager {
         is_running: Arc<AtomicBool>,
         tenant_limiter: Arc<TenantSubscriptionLimiter>,
     ) {
-        let topics = [topics::SUBSCRIBE, topics::UNSUBSCRIBE, topics::STATUS_REQUEST];
+        let topics = [
+            topics::SUBSCRIBE,
+            topics::UNSUBSCRIBE,
+            topics::STATUS_REQUEST,
+        ];
 
         while is_running.load(Ordering::Relaxed) {
             let mut had_message = false;
@@ -340,9 +362,7 @@ impl SubscriptionManager {
                     if let Ok(request) = PublishRequest::decode(msg.data.as_slice()) {
                         match (topic, &request.payload) {
                             (&topics::SUBSCRIBE, Some(publish_request::Payload::RawData(data))) => {
-                                if let Ok(sub_req) =
-                                    MarketDataSubscribe::decode(data.as_slice())
-                                {
+                                if let Ok(sub_req) = MarketDataSubscribe::decode(data.as_slice()) {
                                     Self::handle_subscribe(
                                         sub_req,
                                         &connections,
@@ -354,7 +374,10 @@ impl SubscriptionManager {
                                     .await;
                                 }
                             }
-                            (&topics::UNSUBSCRIBE, Some(publish_request::Payload::RawData(data))) => {
+                            (
+                                &topics::UNSUBSCRIBE,
+                                Some(publish_request::Payload::RawData(data)),
+                            ) => {
                                 if let Ok(unsub_req) =
                                     MarketDataUnsubscribe::decode(data.as_slice())
                                 {
@@ -454,7 +477,9 @@ impl SubscriptionManager {
                 let ack = MarketDataSubscriptionAck {
                     subscription_id: request.subscription_id,
                     success: false,
-                    error_message: validation.reason.unwrap_or_else(|| "Subscription limit exceeded".to_string()),
+                    error_message: validation
+                        .reason
+                        .unwrap_or_else(|| "Subscription limit exceeded".to_string()),
                     data_engine_node: node_id.to_string(),
                     data_topics: vec![],
                     timestamp: now_timestamp(),
@@ -519,7 +544,9 @@ impl SubscriptionManager {
         connection.add_symbols(&symbols).await;
 
         // Record subscription in tenant limiter
-        tenant_limiter.record_subscription(tenant_id, &exchange, &symbols).await;
+        tenant_limiter
+            .record_subscription(tenant_id, &exchange, &symbols)
+            .await;
 
         // Send connection event to main app
         if let Some(tx) = event_tx {
@@ -553,7 +580,9 @@ impl SubscriptionManager {
             let ack = MarketDataSubscriptionAck {
                 subscription_id: request.subscription_id,
                 success: true,
-                error_message: if validation.rejected_symbols.is_empty() && validation.rejected_data_types.is_empty() {
+                error_message: if validation.rejected_symbols.is_empty()
+                    && validation.rejected_data_types.is_empty()
+                {
                     String::new()
                 } else {
                     format!(
@@ -607,7 +636,9 @@ impl SubscriptionManager {
 
             // Record unsubscription in tenant limiter
             if let Some(tid) = tenant_id {
-                tenant_limiter.record_unsubscription(tid, &exchange, &request.symbols).await;
+                tenant_limiter
+                    .record_unsubscription(tid, &exchange, &request.symbols)
+                    .await;
             }
 
             // Check if this was the last subscriber

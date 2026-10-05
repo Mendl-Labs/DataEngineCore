@@ -1,21 +1,24 @@
 //! Security and authentication system for DataEngine
-//! 
+//!
 //! Provides secure API key management, rate limiting, request signing,
 //! and security monitoring for production trading systems.
 
-use std::collections::HashMap;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use crate::{infrastructure::logging_facade::MAIN_LOGGER, log_debug, log_error, log_warn};
 use ahash::AHashMap;
+use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dashmap::DashMap;
 use fastrand;
 use hmac::{Hmac, Mac};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Sha512};
-use crate::{infrastructure::logging_facade::MAIN_LOGGER, log_warn, log_error, log_debug};
-use anyhow::{Result, anyhow};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Security configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,7 +131,7 @@ impl RateLimit {
 
     pub fn check_and_increment(&mut self) -> bool {
         let now = Instant::now();
-        
+
         // Reset window if expired
         if now.duration_since(self.window_start) > self.window_duration {
             self.window_start = now;
@@ -187,12 +190,19 @@ impl RequestSignature {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         let nonce = fastrand::u64(..).to_string();
-        
+
         // Create message to sign: timestamp + nonce + method + path + body
-        let message = format!("{}{}{}{}{}", timestamp, nonce, method.to_uppercase(), path, body);
-        
+        let message = format!(
+            "{}{}{}{}{}",
+            timestamp,
+            nonce,
+            method.to_uppercase(),
+            path,
+            body
+        );
+
         let signature = match algorithm {
             HmacAlgorithm::Sha256 => {
                 let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
@@ -217,31 +227,26 @@ impl RequestSignature {
     }
 
     /// Verify a request signature
-    pub fn verify(
-        &self,
-        method: &str,
-        path: &str,
-        body: &str,
-        secret: &str,
-    ) -> Result<bool> {
+    pub fn verify(&self, method: &str, path: &str, body: &str, secret: &str) -> Result<bool> {
         // Check timestamp (prevent replay attacks)
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         let age_ms = now.saturating_sub(self.timestamp);
-        if age_ms > 300_000 { // 5 minutes
+        if age_ms > 300_000 {
+            // 5 minutes
             return Ok(false);
         }
 
         // Recreate the message
         let message = format!(
-            "{}{}{}{}{}", 
-            self.timestamp, 
-            self.nonce, 
-            method.to_uppercase(), 
-            path, 
+            "{}{}{}{}{}",
+            self.timestamp,
+            self.nonce,
+            method.to_uppercase(),
+            path,
             body
         );
 
@@ -302,7 +307,7 @@ pub struct SecurityManager {
     rate_limits: DashMap<String, Arc<RwLock<RateLimit>>>, // keyed by API key or IP
     security_events: RwLock<Vec<SecurityEvent>>,
     suspicious_ips: DashMap<String, AtomicU64>, // IP -> failed attempts
-    nonce_cache: DashMap<String, Instant>, // Prevent nonce reuse
+    nonce_cache: DashMap<String, Instant>,      // Prevent nonce reuse
 }
 
 impl SecurityManager {
@@ -320,14 +325,17 @@ impl SecurityManager {
     /// Add API credential
     pub fn add_credential(&self, credential: ApiCredential) {
         let key = credential.key.clone();
-        self.credentials.write().insert(key.clone(), Arc::new(RwLock::new(credential)));
-        
+        self.credentials
+            .write()
+            .insert(key.clone(), Arc::new(RwLock::new(credential)));
+
         // Initialize rate limit for this API key
         let rate_limit = RateLimit::new(
             self.config.max_requests_per_minute,
             self.config.rate_limit_window,
         );
-        self.rate_limits.insert(key, Arc::new(RwLock::new(rate_limit)));
+        self.rate_limits
+            .insert(key, Arc::new(RwLock::new(rate_limit)));
     }
 
     /// Authenticate API request
@@ -353,7 +361,10 @@ impl SecurityManager {
                     event_type: SecurityEventType::InvalidApiKey,
                     source_ip: source_ip.map(|s| s.to_string()),
                     api_key: Some(api_key.to_string()),
-                    timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+                    timestamp: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or(Duration::ZERO)
+                        .as_millis() as u64,
                     details: HashMap::new(),
                     severity: SecuritySeverity::Medium,
                 });
@@ -374,7 +385,10 @@ impl SecurityManager {
                 event_type: SecurityEventType::RateLimitExceeded,
                 source_ip: source_ip.map(|s| s.to_string()),
                 api_key: Some(api_key.to_string()),
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_millis() as u64,
                 details: HashMap::new(),
                 severity: SecuritySeverity::High,
             });
@@ -385,7 +399,7 @@ impl SecurityManager {
         if self.config.enable_request_signing {
             if let Some(sig) = signature {
                 // Check nonce reuse
-                if let Some(_) = self.nonce_cache.get(&sig.nonce) {
+                if self.nonce_cache.get(&sig.nonce).is_some() {
                     return Ok(false); // Nonce already used
                 }
 
@@ -399,7 +413,10 @@ impl SecurityManager {
                         event_type: SecurityEventType::InvalidSignature,
                         source_ip: source_ip.map(|s| s.to_string()),
                         api_key: Some(api_key.to_string()),
-                        timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+                        timestamp: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or(Duration::ZERO)
+                            .as_millis() as u64,
                         details: HashMap::new(),
                         severity: SecuritySeverity::High,
                     });
@@ -448,21 +465,18 @@ impl SecurityManager {
     /// Rotate API key
     pub fn rotate_api_key(&self, old_key: &str) -> Result<ApiCredential> {
         let mut credentials = self.credentials.write();
-        
+
         // Get the old credential and extract needed info
         let (new_credential, old_cred_arc) = if let Some(old_cred_arc) = credentials.get(old_key) {
             let old_cred = old_cred_arc.read();
-            
+
             // Generate new credentials
             let new_key = format!("api_{}", fastrand::u64(..));
             let new_secret = format!("sec_{}", fastrand::u128(..));
-            
-            let new_credential = ApiCredential::new(
-                new_key.clone(),
-                new_secret,
-                old_cred.permissions.clone(),
-            );
-            
+
+            let new_credential =
+                ApiCredential::new(new_key.clone(), new_secret, old_cred.permissions.clone());
+
             (new_credential, old_cred_arc.clone())
         } else {
             return Err(anyhow!("API key not found: {}", old_key));
@@ -470,28 +484,35 @@ impl SecurityManager {
 
         // Add new credential
         let new_key = new_credential.key.clone();
-        credentials.insert(new_key.clone(), Arc::new(RwLock::new(new_credential.clone())));
-        
+        credentials.insert(
+            new_key.clone(),
+            Arc::new(RwLock::new(new_credential.clone())),
+        );
+
         // Initialize rate limit for new key
         let rate_limit = RateLimit::new(
             self.config.max_requests_per_minute,
             self.config.rate_limit_window,
         );
-        self.rate_limits.insert(new_key, Arc::new(RwLock::new(rate_limit)));
-        
+        self.rate_limits
+            .insert(new_key, Arc::new(RwLock::new(rate_limit)));
+
         // Now it's safe to deactivate old credential
         {
             let mut old_cred_mut = old_cred_arc.write();
             old_cred_mut.deactivate();
         }
-        
+
         drop(credentials); // Release the write lock
-        
+
         self.record_security_event(SecurityEvent {
             event_type: SecurityEventType::ApiKeyRotated,
             source_ip: None,
             api_key: Some(old_key.to_string()),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
             details: {
                 let mut details = HashMap::new();
                 details.insert("new_key".to_string(), serde_json::json!(new_credential.key));
@@ -516,7 +537,7 @@ impl SecurityManager {
         // Store in event log (with size limit)
         let mut events = self.security_events.write();
         events.push(event);
-        
+
         // Keep only last 10,000 events
         if events.len() > 10_000 {
             events.drain(..1_000); // Remove oldest 1,000
@@ -545,9 +566,10 @@ impl SecurityManager {
     /// Clean up old nonces and events
     pub fn cleanup(&self) {
         let cutoff = Instant::now() - Duration::from_secs(300); // 5 minutes
-        
+
         // Clean old nonces
-        let old_nonces: Vec<String> = self.nonce_cache
+        let old_nonces: Vec<String> = self
+            .nonce_cache
             .iter()
             .filter_map(|entry| {
                 if *entry.value() < cutoff {
@@ -568,13 +590,14 @@ impl SecurityManager {
     /// Get security statistics
     pub fn get_security_stats(&self) -> SecurityStats {
         let events = self.security_events.read();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
         let hour_ago = now - (60 * 60 * 1000); // 1 hour ago
 
-        let recent_events: Vec<&SecurityEvent> = events
-            .iter()
-            .filter(|e| e.timestamp > hour_ago)
-            .collect();
+        let recent_events: Vec<&SecurityEvent> =
+            events.iter().filter(|e| e.timestamp > hour_ago).collect();
 
         let mut stats = SecurityStats {
             total_events: events.len(),
@@ -594,8 +617,14 @@ impl SecurityManager {
 
         // Count events by type and severity
         for event in &recent_events {
-            *stats.events_by_type.entry(format!("{:?}", event.event_type)).or_insert(0) += 1;
-            *stats.events_by_severity.entry(format!("{:?}", event.severity)).or_insert(0) += 1;
+            *stats
+                .events_by_type
+                .entry(format!("{:?}", event.event_type))
+                .or_insert(0) += 1;
+            *stats
+                .events_by_severity
+                .entry(format!("{:?}", event.severity))
+                .or_insert(0) += 1;
         }
 
         stats
@@ -636,15 +665,15 @@ mod tests {
     #[test]
     fn test_rate_limit() {
         let mut rate_limit = RateLimit::new(5, Duration::from_secs(60));
-        
+
         // Should allow 5 requests
         for _ in 0..5 {
             assert!(rate_limit.check_and_increment());
         }
-        
+
         // 6th request should be denied
         assert!(!rate_limit.check_and_increment());
-        
+
         assert_eq!(rate_limit.remaining_requests(), 0);
     }
 
@@ -656,24 +685,29 @@ mod tests {
             r#"{"symbol":"BTC/USD","side":"buy","amount":1.0}"#,
             "test_secret",
             HmacAlgorithm::Sha256,
-        ).unwrap();
+        )
+        .unwrap();
 
-        let is_valid = signature.verify(
-            "POST",
-            "/api/v1/orders",
-            r#"{"symbol":"BTC/USD","side":"buy","amount":1.0}"#,
-            "test_secret",
-        ).unwrap();
+        let is_valid = signature
+            .verify(
+                "POST",
+                "/api/v1/orders",
+                r#"{"symbol":"BTC/USD","side":"buy","amount":1.0}"#,
+                "test_secret",
+            )
+            .unwrap();
 
         assert!(is_valid);
 
         // Test with wrong secret
-        let is_invalid = signature.verify(
-            "POST",
-            "/api/v1/orders",
-            r#"{"symbol":"BTC/USD","side":"buy","amount":1.0}"#,
-            "wrong_secret",
-        ).unwrap();
+        let is_invalid = signature
+            .verify(
+                "POST",
+                "/api/v1/orders",
+                r#"{"symbol":"BTC/USD","side":"buy","amount":1.0}"#,
+                "wrong_secret",
+            )
+            .unwrap();
 
         assert!(!is_invalid);
     }
@@ -696,7 +730,7 @@ mod tests {
             enable_request_signing: false,
             ..Default::default()
         });
-        
+
         let credential2 = ApiCredential::new(
             "test_key2".to_string(),
             "test_secret2".to_string(),
@@ -704,14 +738,17 @@ mod tests {
         );
         manager_no_sig.add_credential(credential2);
 
-        let is_authenticated = manager_no_sig.authenticate_request(
-            "test_key2",
-            None,
-            "GET",
-            "/api/v1/status",
-            "",
-            Some("127.0.0.1"),
-        ).await.unwrap();
+        let is_authenticated = manager_no_sig
+            .authenticate_request(
+                "test_key2",
+                None,
+                "GET",
+                "/api/v1/status",
+                "",
+                Some("127.0.0.1"),
+            )
+            .await
+            .unwrap();
 
         assert!(is_authenticated);
 
@@ -720,5 +757,3 @@ mod tests {
         assert!(!manager_no_sig.check_permission("test_key2", "write"));
     }
 }
-
-

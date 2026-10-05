@@ -5,26 +5,27 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use performance::{CpuAffinityManager, cpu_affinity::{set_high_priority, prefault_stack}};
+use performance::{
+    cpu_affinity::{prefault_stack, set_high_priority},
+    CpuAffinityManager,
+};
 use protocol::broker::messages::{
     market_message, publish_request, Bar, MarketMessage, PublishRequest, Trade, Trades,
 };
 use publisher::{Publisher, PublisherConfig};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{env, sync::Arc};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{env, sync::Arc};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast::Receiver, RwLock};
-use tokio_tungstenite::{
-    connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream,
-};
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
+use crate::infrastructure::logging_facade::MASSIVE_LOGGER;
 use crate::network::endpoint::EndpointHandler;
 use crate::network::handlers::websockets::massive::BarAggregator;
-use crate::infrastructure::logging_facade::MASSIVE_LOGGER;
-use crate::{log_info, log_warn, log_error, log_debug};
+use crate::{log_debug, log_error, log_info, log_warn};
 
 // =============================================================================
 // Message model
@@ -58,8 +59,10 @@ struct MassiveStockTrade {
     pub p: f64,
     /// Size / quantity
     pub s: f64,
-    /// Trade conditions (NYSE/TAPE codes)
+    /// Trade conditions (NYSE/TAPE codes). Not yet consumed — see
+    /// `process_stock_trade`'s note on the pending condition-code lookup table.
     #[serde(default)]
+    #[allow(dead_code)]
     pub c: Vec<i32>,
     /// Timestamp in milliseconds
     pub t: i64,
@@ -138,17 +141,26 @@ impl MassiveWebSocketHandler {
         is_connected: Arc<AtomicBool>,
         last_message_time: Arc<AtomicU64>,
     ) -> Result<Self> {
-        let api_key = env::var("MASSIVE_API_KEY")
-            .unwrap_or_default();
+        let api_key = env::var("MASSIVE_API_KEY").unwrap_or_default();
         if api_key.is_empty() {
-            return Err(anyhow::anyhow!("MASSIVE_API_KEY environment variable is not set or empty"));
+            return Err(anyhow::anyhow!(
+                "MASSIVE_API_KEY environment variable is not set or empty"
+            ));
         }
 
         // Connect
-        log_info!(MASSIVE_LOGGER, "Connecting to Massive WebSocket: {}", feed_url);
-        let (ws_stream, _) = connect_async(feed_url)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to connect to Massive WebSocket at {}: {}", feed_url, e))?;
+        log_info!(
+            MASSIVE_LOGGER,
+            "Connecting to Massive WebSocket: {}",
+            feed_url
+        );
+        let (ws_stream, _) = connect_async(feed_url).await.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to connect to Massive WebSocket at {}: {}",
+                feed_url,
+                e
+            )
+        })?;
         log_info!(MASSIVE_LOGGER, "Connected to Massive WebSocket");
 
         let (mut writer, mut reader) = ws_stream.split();
@@ -160,7 +172,9 @@ impl MassiveWebSocketHandler {
 
         // Authenticate
         let auth_msg = format!(r#"{{"action":"auth","params":"{}"}}"#, api_key);
-        writer.send(Message::Text(auth_msg)).await
+        writer
+            .send(Message::Text(auth_msg))
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to send auth message: {}", e))?;
 
         // Expect auth_success
@@ -200,10 +214,20 @@ impl MassiveWebSocketHandler {
                 }
             })
             .collect();
-        let sub_msg = format!(r#"{{"action":"subscribe","params":"{}"}}"#, params.join(","));
-        writer.send(Message::Text(sub_msg)).await
+        let sub_msg = format!(
+            r#"{{"action":"subscribe","params":"{}"}}"#,
+            params.join(",")
+        );
+        writer
+            .send(Message::Text(sub_msg))
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to send subscribe message: {}", e))?;
-        log_info!(MASSIVE_LOGGER, "Subscribed to Massive {} trade events for {} symbols", event_prefix, symbols.len());
+        log_info!(
+            MASSIVE_LOGGER,
+            "Subscribed to Massive {} trade events for {} symbols",
+            event_prefix,
+            symbols.len()
+        );
 
         let config_path = env::var("CONFIG_PATH")
             .map_err(|_| anyhow::anyhow!("CONFIG_PATH environment variable must be set"))?;
@@ -212,16 +236,24 @@ impl MassiveWebSocketHandler {
         // Create publisher (or None in database-only / no-broker mode)
         let database_only_mode = env::var("DATABASE_ONLY_MODE")
             .unwrap_or_default()
-            .to_lowercase() == "true"
+            .to_lowercase()
+            == "true"
             || env::var("DISABLE_MESSAGE_BROKER")
                 .unwrap_or_default()
-                .to_lowercase() == "true";
+                .to_lowercase()
+                == "true";
 
         let publisher = if database_only_mode {
-            log_info!(MASSIVE_LOGGER, "DATABASE-ONLY MODE: Message broker publishing disabled");
+            log_info!(
+                MASSIVE_LOGGER,
+                "DATABASE-ONLY MODE: Message broker publishing disabled"
+            );
             None
         } else {
-            let addr = format!("{}:{}", config.message_broker.address, config.message_broker.port);
+            let addr = format!(
+                "{}:{}",
+                config.message_broker.address, config.message_broker.port
+            );
             let publisher_config = PublisherConfig::new(&addr);
             Some(Arc::new(tokio::sync::Mutex::new(
                 Publisher::new(publisher_config)
@@ -318,7 +350,11 @@ impl MassiveWebSocketHandler {
         };
 
         if let Some(publisher_ref) = &self.publisher {
-            match publisher_ref.lock().await.publish(prost::Message::encode_to_vec(&request), &topic_name) {
+            match publisher_ref
+                .lock()
+                .await
+                .publish(prost::Message::encode_to_vec(&request), &topic_name)
+            {
                 Ok(_) => {
                     // Update health timestamp on successful publish
                     let now_ms = SystemTime::now()
@@ -328,22 +364,28 @@ impl MassiveWebSocketHandler {
                     self.last_message_time.store(now_ms, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    log_error!(MASSIVE_LOGGER, "Failed to publish trade for {}: {:?}", trade.pair, e);
+                    log_error!(
+                        MASSIVE_LOGGER,
+                        "Failed to publish trade for {}: {:?}",
+                        trade.pair,
+                        e
+                    );
                 }
             }
 
             // Feed tick into the bar aggregator; publish a completed bar if one closed.
-            if let Some(bar) = self.bar_aggregator.ingest(
-                &trade.pair,
-                "massive",
-                trade.p,
-                trade.s,
-                trade.t,
-            ) {
+            if let Some(bar) =
+                self.bar_aggregator
+                    .ingest(&trade.pair, "massive", trade.p, trade.s, trade.t)
+            {
                 self.publish_bar(publisher_ref, bar).await;
             }
         } else {
-            log_debug!(MASSIVE_LOGGER, "STREAM-ONLY MODE: skipping publish for {}", trade.pair);
+            log_debug!(
+                MASSIVE_LOGGER,
+                "STREAM-ONLY MODE: skipping publish for {}",
+                trade.pair
+            );
         }
     }
 
@@ -368,7 +410,11 @@ impl MassiveWebSocketHandler {
             payload: Some(publish_request::Payload::MarketPayload(market_message)),
         };
 
-        if let Err(e) = publisher_ref.lock().await.publish(prost::Message::encode_to_vec(&request), &bars_topic) {
+        if let Err(e) = publisher_ref
+            .lock()
+            .await
+            .publish(prost::Message::encode_to_vec(&request), &bars_topic)
+        {
             log_error!(MASSIVE_LOGGER, "Failed to publish bar: {:?}", e);
         }
     }
@@ -424,7 +470,11 @@ impl MassiveWebSocketHandler {
         };
 
         if let Some(publisher_ref) = &self.publisher {
-            match publisher_ref.lock().await.publish(prost::Message::encode_to_vec(&request), &topic_name) {
+            match publisher_ref
+                .lock()
+                .await
+                .publish(prost::Message::encode_to_vec(&request), &topic_name)
+            {
                 Ok(_) => {
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -433,21 +483,27 @@ impl MassiveWebSocketHandler {
                     self.last_message_time.store(now_ms, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    log_error!(MASSIVE_LOGGER, "Failed to publish stock trade for {}: {:?}", trade.sym, e);
+                    log_error!(
+                        MASSIVE_LOGGER,
+                        "Failed to publish stock trade for {}: {:?}",
+                        trade.sym,
+                        e
+                    );
                 }
             }
 
-            if let Some(bar) = self.bar_aggregator.ingest(
-                &trade.sym,
-                "massive",
-                trade.p,
-                trade.s,
-                trade.t,
-            ) {
+            if let Some(bar) = self
+                .bar_aggregator
+                .ingest(&trade.sym, "massive", trade.p, trade.s, trade.t)
+            {
                 self.publish_bar(publisher_ref, bar).await;
             }
         } else {
-            log_debug!(MASSIVE_LOGGER, "STREAM-ONLY MODE: skipping publish for {}", trade.sym);
+            log_debug!(
+                MASSIVE_LOGGER,
+                "STREAM-ONLY MODE: skipping publish for {}",
+                trade.sym
+            );
         }
     }
 
@@ -509,7 +565,11 @@ impl MassiveWebSocketHandler {
         };
 
         if let Some(publisher_ref) = &self.publisher {
-            match publisher_ref.lock().await.publish(prost::Message::encode_to_vec(&request), &topic_name) {
+            match publisher_ref
+                .lock()
+                .await
+                .publish(prost::Message::encode_to_vec(&request), &topic_name)
+            {
                 Ok(_) => {
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -518,21 +578,27 @@ impl MassiveWebSocketHandler {
                     self.last_message_time.store(now_ms, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    log_error!(MASSIVE_LOGGER, "Failed to publish forex agg for {}: {:?}", symbol, e);
+                    log_error!(
+                        MASSIVE_LOGGER,
+                        "Failed to publish forex agg for {}: {:?}",
+                        symbol,
+                        e
+                    );
                 }
             }
 
-            if let Some(bar) = self.bar_aggregator.ingest(
-                &symbol,
-                "massive",
-                agg.c,
-                agg.v,
-                agg.end_ms,
-            ) {
+            if let Some(bar) = self
+                .bar_aggregator
+                .ingest(&symbol, "massive", agg.c, agg.v, agg.end_ms)
+            {
                 self.publish_bar(publisher_ref, bar).await;
             }
         } else {
-            log_debug!(MASSIVE_LOGGER, "STREAM-ONLY MODE: skipping publish for {}", symbol);
+            log_debug!(
+                MASSIVE_LOGGER,
+                "STREAM-ONLY MODE: skipping publish for {}",
+                symbol
+            );
         }
     }
 
@@ -544,39 +610,33 @@ impl MassiveWebSocketHandler {
         };
 
         match ev {
-            "XT" => {
-                match serde_json::from_value::<MassiveTrade>(event.clone()) {
-                    Ok(trade) => {
-                        log_debug!(MASSIVE_LOGGER, "Trade: {} @ {}", trade.pair, trade.p);
-                        self.process_trade(trade).await;
-                    }
-                    Err(e) => {
-                        log_error!(MASSIVE_LOGGER, "Failed to deserialize XT event: {}", e);
-                    }
+            "XT" => match serde_json::from_value::<MassiveTrade>(event.clone()) {
+                Ok(trade) => {
+                    log_debug!(MASSIVE_LOGGER, "Trade: {} @ {}", trade.pair, trade.p);
+                    self.process_trade(trade).await;
                 }
-            }
-            "T" => {
-                match serde_json::from_value::<MassiveStockTrade>(event.clone()) {
-                    Ok(trade) => {
-                        log_debug!(MASSIVE_LOGGER, "Stock trade: {} @ {}", trade.sym, trade.p);
-                        self.process_stock_trade(trade).await;
-                    }
-                    Err(e) => {
-                        log_error!(MASSIVE_LOGGER, "Failed to deserialize T event: {}", e);
-                    }
+                Err(e) => {
+                    log_error!(MASSIVE_LOGGER, "Failed to deserialize XT event: {}", e);
                 }
-            }
-            "CAS" => {
-                match serde_json::from_value::<MassiveForexAgg>(event.clone()) {
-                    Ok(agg) => {
-                        log_debug!(MASSIVE_LOGGER, "Forex agg: {} close {}", agg.pair, agg.c);
-                        self.process_forex_agg(agg).await;
-                    }
-                    Err(e) => {
-                        log_error!(MASSIVE_LOGGER, "Failed to deserialize CAS event: {}", e);
-                    }
+            },
+            "T" => match serde_json::from_value::<MassiveStockTrade>(event.clone()) {
+                Ok(trade) => {
+                    log_debug!(MASSIVE_LOGGER, "Stock trade: {} @ {}", trade.sym, trade.p);
+                    self.process_stock_trade(trade).await;
                 }
-            }
+                Err(e) => {
+                    log_error!(MASSIVE_LOGGER, "Failed to deserialize T event: {}", e);
+                }
+            },
+            "CAS" => match serde_json::from_value::<MassiveForexAgg>(event.clone()) {
+                Ok(agg) => {
+                    log_debug!(MASSIVE_LOGGER, "Forex agg: {} close {}", agg.pair, agg.c);
+                    self.process_forex_agg(agg).await;
+                }
+                Err(e) => {
+                    log_error!(MASSIVE_LOGGER, "Failed to deserialize CAS event: {}", e);
+                }
+            },
             "status" => {
                 let status = event.get("status").and_then(Value::as_str).unwrap_or("?");
                 let message = event.get("message").and_then(Value::as_str).unwrap_or("");
