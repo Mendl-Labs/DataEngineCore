@@ -1,8 +1,5 @@
 // SIMD optimizations for data processing
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use std::arch::x86_64::*;
-
 /// SIMD-optimized operations for market data processing
 pub struct SimdProcessor {
     pub enabled: bool,

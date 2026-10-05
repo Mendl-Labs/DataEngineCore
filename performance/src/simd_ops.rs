@@ -248,7 +248,6 @@ impl SimdCalculator {
         let mut total_volume = 0.0;
 
         let chunks = prices.len() / 4;
-        let remainder = prices.len() % 4;
 
         for i in 0..chunks {
             let base = i * 4;

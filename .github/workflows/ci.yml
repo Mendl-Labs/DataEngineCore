@@ -1,0 +1,121 @@
+# DataEngineCore CI
+#
+# This workspace has no root package -- hostbuilder/config/performance all
+# carry MANDATORY (non-optional, non-feature-gated) path dependencies on
+# sibling repositories that are expected to sit next to DataEngineCore on
+# disk (see README.md "Sibling Repositories"):
+#
+#   ../../BacktestingCore/derivatives            (public)
+#   ../../databaseschema                          (public, optional feature)
+#   ../../LoggingEngine/ultra-logger               (PRIVATE)
+#   ../../MessageBrokerEngine/{publisher,subscriber,protocol}  (public)
+#
+# So this job checks all four out alongside DataEngineCore before touching
+# cargo. Because the dependency declarations are plain `path = "../../X"`
+# entries (not git deps), no [patch] section is needed -- checking the
+# siblings out at the matching relative layout is enough.
+#
+# LoggingEngine is private, so that checkout needs a PAT with read access to
+# it (the default GITHUB_TOKEN cannot read a different private repo). As of
+# this workflow's introduction, no such secret exists on this repo yet --
+# add a PERSONAL_ACCESS_TOKEN repo secret before this can go green. Until
+# then, every run will fail at the "Checkout LoggingEngine" step.
+
+name: CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Build, Lint & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout DataEngineCore
+        uses: actions/checkout@v4
+        with:
+          path: DataEngineCore
+
+      - name: Checkout LoggingEngine (private dependency -- ultra-logger)
+        uses: actions/checkout@v4
+        with:
+          repository: Mendl-Labs/LoggingEngine
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          path: LoggingEngine
+
+      - name: Checkout BacktestingCore (dependency -- derivatives)
+        uses: actions/checkout@v4
+        with:
+          repository: Mendl-Labs/BacktestingCore
+          path: BacktestingCore
+
+      - name: Checkout databaseschema (dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: Mendl-Labs/databaseschema
+          path: databaseschema
+
+      - name: Checkout MessageBrokerEngine (dependency -- publisher/subscriber/protocol)
+        uses: actions/checkout@v4
+        with:
+          repository: Mendl-Labs/MessageBrokerEngine
+          path: MessageBrokerEngine
+
+      # Cargo fetches the private LoggingEngine git dependency over HTTPS.
+      # actions/checkout clears its own credentials after each checkout, so
+      # route github.com git access through the PAT before any cargo step.
+      - name: Configure git auth for private cargo dependencies
+        env:
+          GH_PAT: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install Rust 1.90.0
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # libpq-dev: hostbuilder's default "database" feature pulls in
+          # diesel/diesel-async with the postgres backend (via
+          # databaseschema), which links libpq at build time.
+          # libssl-dev: tokio-tungstenite's native-tls feature and
+          # reqwest's TLS backend link OpenSSL on Linux.
+          # Same packages SignalEngine's CI installs for the same reasons.
+          sudo apt-get install -y libpq-dev libssl-dev pkg-config
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "DataEngineCore -> target"
+
+      - name: cargo fmt -- --check
+        working-directory: DataEngineCore
+        run: cargo fmt -- --check
+
+      - name: cargo clippy --all-targets -- -D warnings
+        working-directory: DataEngineCore
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo build --workspace
+        working-directory: DataEngineCore
+        run: cargo build --workspace
+
+      - name: cargo test --workspace
+        working-directory: DataEngineCore
+        run: cargo test --workspace
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        working-directory: DataEngineCore
+        run: cargo audit
