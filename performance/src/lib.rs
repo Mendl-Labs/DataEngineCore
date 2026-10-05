@@ -382,6 +382,10 @@ pub mod cache_utils {
     }
 
     /// Force a cache line flush
+    ///
+    /// # Safety
+    /// `ptr` must be an address the caller is allowed to access. `CLFLUSH` faults
+    /// on unmapped addresses, so an invalid pointer is undefined behaviour.
     #[cfg(target_arch = "x86_64")]
     pub unsafe fn flush_cache_line(ptr: *const u8) {
         unsafe {
