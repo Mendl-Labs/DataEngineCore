@@ -1,10 +1,10 @@
 //! HostedObject implementation
-//! 
+//!
 //! This module contains the main application object that orchestrates
 //! all components of the DataEngine.
 //!
 //! # Demand-Driven Architecture
-//! 
+//!
 //! DataEngine only connects to exchange WebSockets when SignalEngine has active
 //! strategies that need market data. This ensures resources are only consumed
 //! when strategies are actively running.
@@ -28,8 +28,8 @@ use mockall::automock;
 use std::{
     collections::HashMap,
     env,
-    sync::Arc,
     sync::atomic::{AtomicBool, AtomicU64},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 #[cfg(unix)]
@@ -38,24 +38,26 @@ use tokio::{signal, sync::broadcast::channel, sync::mpsc};
 
 #[cfg(feature = "database")]
 use crate::data::get_info::get_exchange;
+#[cfg(feature = "database")]
+use crate::infrastructure::monitoring::DatabaseHealthChecker;
 use crate::{
     core::subscription_manager::{ConnectionEvent, SubscriptionManager},
     core::tenant_subscription_limits::SubscriptionTier,
+    infrastructure::logging_facade::MAIN_LOGGER,
     infrastructure::{
         monitoring::{PerformanceHealthChecker, SystemHealthMonitor, WebSocketHealthChecker},
         resilience::ErrorHandler,
     },
+    log_error,
+    // Import logging macros (exported at crate root) and logger instance
+    log_info,
+    log_warn,
     network::{
         endpoint::EndpointHandler,
-        handlers::websockets::{MassiveWebSocketHandler, get_massive_feed_url, OandaStreamHandler},
+        handlers::websockets::{get_massive_feed_url, MassiveWebSocketHandler, OandaStreamHandler},
     },
     security::{SecurityConfig, SecurityManager},
-    // Import logging macros (exported at crate root) and logger instance
-    log_info, log_warn, log_error,
-    infrastructure::logging_facade::MAIN_LOGGER,
 };
-#[cfg(feature = "database")]
-use crate::infrastructure::monitoring::DatabaseHealthChecker;
 
 #[automock]
 #[async_trait]
@@ -74,7 +76,12 @@ pub struct ExchangeMetadata {
 pub struct HostedObject {
     config: Config,
     // Database pool removed from runtime — metadata is cached at startup
+    // NOTE: loaded at startup but not yet read by the run loop anywhere else in
+    // this crate (flagged during the fmt/clippy cleanup pass, not fixed here —
+    // looks like the consuming code was never wired up rather than a trivial
+    // unused field; `#[allow(dead_code)]` only silences the lint).
     #[cfg(feature = "database")]
+    #[allow(dead_code)]
     exchange_metadata: HashMap<String, ExchangeMetadata>,
     _health_monitor: Arc<SystemHealthMonitor>,
     _security_manager: Arc<SecurityManager>,
@@ -89,7 +96,9 @@ pub struct HostedObject {
 }
 
 impl HostedObject {
-    pub async fn new(tier_limits: std::sync::Arc<dyn super::tenant_subscription_limits::TierLimits>) -> Result<Self> {
+    pub async fn new(
+        tier_limits: std::sync::Arc<dyn super::tenant_subscription_limits::TierLimits>,
+    ) -> Result<Self> {
         dotenv().ok();
         let config_path = env::var("CONFIG_PATH")
             .map_err(|_| anyhow::anyhow!("CONFIG_PATH environment variable must be set"))?;
@@ -159,9 +168,8 @@ impl HostedObject {
                 }
             }
 
-            let db_health_checker = Arc::new(DatabaseHealthChecker::new(
-                Arc::clone(&postgres_pool),
-            ));
+            let db_health_checker =
+                Arc::new(DatabaseHealthChecker::new(Arc::clone(&postgres_pool)));
             // Pool is kept alive through the health checker Arc; runtime code never uses it directly
             (exchange_metadata, db_health_checker)
         };
@@ -179,8 +187,8 @@ impl HostedObject {
         health_monitor.start().await?;
 
         // Get MessageBroker address from environment
-        let broker_address = env::var("MESSAGE_BROKER_ADDRESS")
-            .unwrap_or_else(|_| "127.0.0.1:9999".to_string());
+        let broker_address =
+            env::var("MESSAGE_BROKER_ADDRESS").unwrap_or_else(|_| "127.0.0.1:9999".to_string());
 
         Ok(Self {
             config,
@@ -210,7 +218,8 @@ impl HostedObjectTrait for HostedObject {
         let (event_tx, mut event_rx) = mpsc::channel::<ConnectionEvent>(100);
 
         // Start subscription manager
-        let mut subscription_manager = SubscriptionManager::new(self.broker_address.clone(), self.tier_limits.clone());
+        let mut subscription_manager =
+            SubscriptionManager::new(self.broker_address.clone(), self.tier_limits.clone());
         subscription_manager.start(event_tx).await?;
 
         // Seed tenant subscription tiers from TENANT_TIERS env var.
@@ -218,7 +227,11 @@ impl HostedObjectTrait for HostedObject {
         // Tiers: Free | Starter | Professional | Enterprise (case-insensitive).
         // Without registration, tenants default to Free (only "trades" allowed, no orderbook).
         if let Ok(tenant_tiers) = env::var("TENANT_TIERS") {
-            for entry in tenant_tiers.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            for entry in tenant_tiers
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 let mut parts = entry.splitn(2, ':');
                 let uuid_str = parts.next().unwrap_or("").trim();
                 let tier_str = parts.next().unwrap_or("").trim();
@@ -228,7 +241,8 @@ impl HostedObjectTrait for HostedObject {
                         log_warn!(
                             MAIN_LOGGER,
                             "TENANT_TIERS: invalid UUID '{}': {}",
-                            uuid_str, e
+                            uuid_str,
+                            e
                         );
                         continue;
                     }
@@ -242,22 +256,20 @@ impl HostedObjectTrait for HostedObject {
                         log_warn!(
                             MAIN_LOGGER,
                             "TENANT_TIERS: unknown tier '{}' for tenant {}",
-                            other, uuid
+                            other,
+                            uuid
                         );
                         continue;
                     }
                 };
                 subscription_manager.register_tenant(uuid, tier);
-                log_info!(
-                    MAIN_LOGGER,
-                    "Registered tenant {} at tier {:?}",
-                    uuid, tier
-                );
+                log_info!(MAIN_LOGGER, "Registered tenant {} at tier {:?}", uuid, tier);
             }
         }
 
         // Track active connections
-        let mut active_connections: HashMap<String, tokio::task::JoinHandle<Result<()>>> = HashMap::new();
+        let mut active_connections: HashMap<String, tokio::task::JoinHandle<Result<()>>> =
+            HashMap::new();
         let mut connection_stop_channels: HashMap<String, mpsc::Sender<()>> = HashMap::new();
 
         // Clone values for the event processing loop
@@ -268,14 +280,20 @@ impl HostedObjectTrait for HostedObject {
         // Spawn shutdown signal handler
         let shutdown_tx_clone = shutdown_tx.clone();
         tokio::spawn(async move {
-            log_info!(MAIN_LOGGER, "Shutdown handler spawned and listening for signals");
-            
+            log_info!(
+                MAIN_LOGGER,
+                "Shutdown handler spawned and listening for signals"
+            );
+
             #[cfg(unix)]
             {
                 match signal(SignalKind::terminate()) {
                     Ok(mut term_signal) => match term_signal.recv().await {
                         Some(_) => {
-                            log_info!(MAIN_LOGGER, "Received SIGTERM, initiating graceful shutdown");
+                            log_info!(
+                                MAIN_LOGGER,
+                                "Received SIGTERM, initiating graceful shutdown"
+                            );
                             let _ = shutdown_tx_clone.send(());
                         }
                         None => {
@@ -302,7 +320,10 @@ impl HostedObjectTrait for HostedObject {
             }
         });
 
-        log_info!(MAIN_LOGGER, "DataEngine ready - waiting for market data subscription requests");
+        log_info!(
+            MAIN_LOGGER,
+            "DataEngine ready - waiting for market data subscription requests"
+        );
 
         // Event processing loop
         loop {
@@ -461,13 +482,13 @@ impl HostedObjectTrait for HostedObject {
                 _ = shutdown_rx.recv() => {
                     log_info!(MAIN_LOGGER, "Shutdown signal received, stopping subscription manager");
                     subscription_manager.stop();
-                    
+
                     // Abort all active connections
                     for (key, handle) in active_connections.drain() {
                         log_info!(MAIN_LOGGER, "Stopping connection: {}", key);
                         handle.abort();
                     }
-                    
+
                     break;
                 }
             }

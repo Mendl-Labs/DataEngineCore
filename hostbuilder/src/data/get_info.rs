@@ -5,13 +5,13 @@
 //! callers that are gated behind `#[cfg(feature = "database")]` continue to compile.
 //! Re-implement against real tables when the schema is restored.
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use diesel_async::AsyncPgConnection;
-use anyhow::Error;
 use crate::infrastructure::logging_facade::MAIN_LOGGER;
-use crate::{log_info, log_error};
+use crate::log_info;
+use anyhow::Error;
+use diesel_async::AsyncPgConnection;
 
 // ── Lightweight stand-in types for removed DB models ────────────────────
 
@@ -43,7 +43,11 @@ pub async fn get_exchange(
     _postgres_pool: Arc<diesel_async::pooled_connection::deadpool::Pool<AsyncPgConnection>>,
     name: String,
 ) -> Result<Exchange, Error> {
-    log_info!(MAIN_LOGGER, "get_exchange called for '{}' — using in-memory stub (DB tables removed)", name);
+    log_info!(
+        MAIN_LOGGER,
+        "get_exchange called for '{}' — using in-memory stub (DB tables removed)",
+        name
+    );
     Err(anyhow::anyhow!(
         "exchanges table was removed from databaseschema; exchange metadata is no longer persisted"
     ))
@@ -53,7 +57,11 @@ pub async fn get_securities(
     _postgres_pool: Arc<diesel_async::pooled_connection::deadpool::Pool<AsyncPgConnection>>,
     symbols: &[String],
 ) -> Result<Vec<Security>, Error> {
-    log_info!(MAIN_LOGGER, "get_securities called for {} symbols — using in-memory stub (DB tables removed)", symbols.len());
+    log_info!(
+        MAIN_LOGGER,
+        "get_securities called for {} symbols — using in-memory stub (DB tables removed)",
+        symbols.len()
+    );
     Err(anyhow::anyhow!(
         "securities table was removed from databaseschema; security metadata is no longer persisted"
     ))
@@ -64,7 +72,10 @@ pub async fn get_orderbooks(
     _securities: Vec<Security>,
     _exchange: &Exchange,
 ) -> Result<HashMap<String, OrderBook>, Error> {
-    log_info!(MAIN_LOGGER, "get_orderbooks called — using in-memory stub (DB tables removed)");
+    log_info!(
+        MAIN_LOGGER,
+        "get_orderbooks called — using in-memory stub (DB tables removed)"
+    );
     Err(anyhow::anyhow!(
         "order_books table was removed from databaseschema; orderbook metadata is no longer persisted"
     ))

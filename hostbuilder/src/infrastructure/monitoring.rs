@@ -1,17 +1,21 @@
 //! Comprehensive monitoring and health check system for DataEngine
-//! 
+//!
 //! Provides real-time health monitoring, performance tracking, and
 //! alerting for production trading system operations.
 
+use crate::infrastructure::logging_facade::MAIN_LOGGER;
+use crate::{log_debug, log_error, log_info, log_warn};
+use anyhow::{anyhow, Result};
+use parking_lot::RwLock;
 use performance::PerformanceMetrics;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, timeout};
-use parking_lot::RwLock;
-use crate::infrastructure::logging_facade::MAIN_LOGGER; use crate::{log_info, log_warn, log_error, log_debug};
-use anyhow::{Result, anyhow};
 
 /// Overall system health status
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,7 +44,10 @@ impl HealthCheckResult {
             status: HealthStatus::Healthy,
             message: "All systems operational".to_string(),
             response_time_ms,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
             details: HashMap::new(),
         }
     }
@@ -51,15 +58,18 @@ impl HealthCheckResult {
             status: HealthStatus::Unhealthy,
             message: message.to_string(),
             response_time_ms,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
             details: HashMap::new(),
         }
     }
 
     pub fn with_detail<V: serde::Serialize>(mut self, key: &str, value: V) -> Self {
         self.details.insert(
-            key.to_string(), 
-            serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+            key.to_string(),
+            serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
         );
         self
     }
@@ -89,7 +99,10 @@ impl WebSocketHealthChecker {
     }
 
     pub fn record_message_received(&self) {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
         self.last_message_time.store(now, Ordering::Relaxed);
     }
 }
@@ -100,25 +113,30 @@ impl HealthCheck for WebSocketHealthChecker {
         let start = Instant::now();
         let is_connected = self.is_connected.load(Ordering::Relaxed);
         let last_message = self.last_message_time.load(Ordering::Relaxed);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
         let time_since_last_message = now - last_message;
 
         let response_time = start.elapsed().as_millis() as u64;
 
         if !is_connected {
             return HealthCheckResult::unhealthy(
-                "websocket", 
-                "WebSocket connection is down", 
-                response_time
-            ).with_detail("connected", false);
+                "websocket",
+                "WebSocket connection is down",
+                response_time,
+            )
+            .with_detail("connected", false);
         }
 
         if time_since_last_message > self.connection_timeout.as_millis() as u64 {
             return HealthCheckResult::unhealthy(
-                "websocket", 
+                "websocket",
                 &format!("No messages received for {}ms", time_since_last_message),
-                response_time
-            ).with_detail("last_message_ms_ago", time_since_last_message);
+                response_time,
+            )
+            .with_detail("last_message_ms_ago", time_since_last_message);
         }
 
         HealthCheckResult::healthy("websocket", response_time)
@@ -134,17 +152,18 @@ impl HealthCheck for WebSocketHealthChecker {
 /// Database connection health checker
 #[cfg(feature = "database")]
 pub struct DatabaseHealthChecker {
-    postgres_pool: Arc<diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>>,
+    postgres_pool:
+        Arc<diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>>,
 }
 
 #[cfg(feature = "database")]
 impl DatabaseHealthChecker {
     pub fn new(
-        postgres_pool: Arc<diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>>,
+        postgres_pool: Arc<
+            diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>,
+        >,
     ) -> Self {
-        Self {
-            postgres_pool,
-        }
+        Self { postgres_pool }
     }
 }
 
@@ -160,22 +179,27 @@ impl HealthCheck for DatabaseHealthChecker {
         match timeout(Duration::from_secs(5), self.postgres_pool.get()).await {
             Ok(Ok(mut conn)) => {
                 // Simple query to test connection
-                match diesel_async::RunQueryDsl::execute(
-                    diesel::sql_query("SELECT 1"),
-                    &mut *conn
-                ).await {
+                match diesel_async::RunQueryDsl::execute(diesel::sql_query("SELECT 1"), &mut *conn)
+                    .await
+                {
                     Ok(_) => {
                         details.insert("postgres_status".to_string(), serde_json::json!("healthy"));
                     }
                     Err(_) => {
                         issues.push("PostgreSQL query failed");
-                        details.insert("postgres_status".to_string(), serde_json::json!("query_failed"));
+                        details.insert(
+                            "postgres_status".to_string(),
+                            serde_json::json!("query_failed"),
+                        );
                     }
                 }
             }
             _ => {
                 issues.push("PostgreSQL connection failed");
-                details.insert("postgres_status".to_string(), serde_json::json!("connection_failed"));
+                details.insert(
+                    "postgres_status".to_string(),
+                    serde_json::json!("connection_failed"),
+                );
             }
         }
 
@@ -187,7 +211,10 @@ impl HealthCheck for DatabaseHealthChecker {
                 status: HealthStatus::Healthy,
                 message: "All database connections healthy".to_string(),
                 response_time_ms: response_time,
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_millis() as u64,
                 details,
             }
         } else {
@@ -196,7 +223,10 @@ impl HealthCheck for DatabaseHealthChecker {
                 status: HealthStatus::Unhealthy,
                 message: issues.join(", "),
                 response_time_ms: response_time,
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_millis() as u64,
                 details,
             }
         }
@@ -244,10 +274,10 @@ impl HealthCheck for PerformanceHealthChecker {
         if snapshot.messages_processed > 0 {
             let error_rate = (snapshot.total_errors as f64) / (snapshot.messages_processed as f64);
             if error_rate > self.error_rate_threshold {
-                status = if status == HealthStatus::Healthy { 
-                    HealthStatus::Degraded 
-                } else { 
-                    HealthStatus::Unhealthy 
+                status = if status == HealthStatus::Healthy {
+                    HealthStatus::Degraded
+                } else {
+                    HealthStatus::Unhealthy
                 };
                 issues.push(format!("High error rate: {:.2}%", error_rate * 100.0));
             }
@@ -256,7 +286,10 @@ impl HealthCheck for PerformanceHealthChecker {
         // Check CPU usage
         if snapshot.cpu_usage_percent > 90 {
             status = HealthStatus::Critical;
-            issues.push(format!("Critical CPU usage: {}%", snapshot.cpu_usage_percent));
+            issues.push(format!(
+                "Critical CPU usage: {}%",
+                snapshot.cpu_usage_percent
+            ));
         } else if snapshot.cpu_usage_percent > 80 {
             status = if matches!(status, HealthStatus::Healthy) {
                 HealthStatus::Degraded
@@ -277,7 +310,10 @@ impl HealthCheck for PerformanceHealthChecker {
             status,
             message,
             response_time_ms: response_time,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
             details: serde_json::to_value(&snapshot)
                 .ok()
                 .and_then(|v| v.as_object().cloned())
@@ -301,6 +337,12 @@ pub struct SystemHealthMonitor {
     start_time: Instant,
 }
 
+impl Default for SystemHealthMonitor {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(30))
+    }
+}
+
 impl SystemHealthMonitor {
     pub fn new(check_interval: Duration) -> Self {
         Self {
@@ -313,53 +355,68 @@ impl SystemHealthMonitor {
         }
     }
 
-    pub fn default() -> Self {
-        Self::new(Duration::from_secs(30))
-    }
-
     pub fn add_health_checker(&mut self, checker: Arc<dyn HealthCheck>) {
         self.health_checkers.push(checker);
     }
 
     pub async fn start(&self) -> Result<()> {
-        if self.is_running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .is_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Err(anyhow!("Health monitor is already running"));
         }
 
-        log_info!(MAIN_LOGGER, "Starting system health monitor with {} checkers", self.health_checkers.len());
-        
+        log_info!(
+            MAIN_LOGGER,
+            "Starting system health monitor with {} checkers",
+            self.health_checkers.len()
+        );
+
         let mut interval = interval(self.check_interval);
-        let results: Arc<RwLock<HashMap<String, HealthCheckResult>>> = Arc::clone(&self.last_check_results);
+        let results: Arc<RwLock<HashMap<String, HealthCheckResult>>> =
+            Arc::clone(&self.last_check_results);
         let status: Arc<RwLock<HealthStatus>> = Arc::clone(&self.overall_status);
         let checkers = self.health_checkers.clone();
 
         tokio::spawn(async move {
             loop {
                 interval.tick().await;
-                
+
                 let mut check_results = HashMap::new();
                 let mut worst_status = HealthStatus::Healthy;
 
                 // Run all health checks concurrently
-                let check_futures: Vec<_> = checkers.iter().map(|checker| {
-                    let checker = Arc::clone(checker);
-                    tokio::spawn(async move {
-                        checker.check_health().await
+                let check_futures: Vec<_> = checkers
+                    .iter()
+                    .map(|checker| {
+                        let checker = Arc::clone(checker);
+                        tokio::spawn(async move { checker.check_health().await })
                     })
-                }).collect();
+                    .collect();
 
                 for future in check_futures {
                     match future.await {
                         Ok(result) => {
-                            log_debug!(MAIN_LOGGER, "Health check result for {}: {:?}", result.component, result.status);
-                            
+                            log_debug!(
+                                MAIN_LOGGER,
+                                "Health check result for {}: {:?}",
+                                result.component,
+                                result.status
+                            );
+
                             // Update worst status
                             match result.status {
                                 HealthStatus::Critical => worst_status = HealthStatus::Critical,
-                                HealthStatus::Unhealthy if !matches!(worst_status, HealthStatus::Critical) => {
+                                HealthStatus::Unhealthy
+                                    if !matches!(worst_status, HealthStatus::Critical) =>
+                                {
                                     worst_status = HealthStatus::Unhealthy;
                                 }
-                                HealthStatus::Degraded if matches!(worst_status, HealthStatus::Healthy) => {
+                                HealthStatus::Degraded
+                                    if matches!(worst_status, HealthStatus::Healthy) =>
+                                {
                                     worst_status = HealthStatus::Degraded;
                                 }
                                 _ => {}
@@ -384,13 +441,21 @@ impl SystemHealthMonitor {
                     let mut status_guard = status.write();
                     let old_status = status_guard.clone();
                     *status_guard = worst_status.clone();
-                    
+
                     if old_status != worst_status {
                         match worst_status {
-                            HealthStatus::Critical => log_error!(MAIN_LOGGER, "System status changed to CRITICAL"),
-                            HealthStatus::Unhealthy => log_warn!(MAIN_LOGGER, "System status changed to UNHEALTHY"),
-                            HealthStatus::Degraded => log_warn!(MAIN_LOGGER, "System status changed to DEGRADED"),
-                            HealthStatus::Healthy => log_info!(MAIN_LOGGER, "System status changed to HEALTHY"),
+                            HealthStatus::Critical => {
+                                log_error!(MAIN_LOGGER, "System status changed to CRITICAL")
+                            }
+                            HealthStatus::Unhealthy => {
+                                log_warn!(MAIN_LOGGER, "System status changed to UNHEALTHY")
+                            }
+                            HealthStatus::Degraded => {
+                                log_warn!(MAIN_LOGGER, "System status changed to DEGRADED")
+                            }
+                            HealthStatus::Healthy => {
+                                log_info!(MAIN_LOGGER, "System status changed to HEALTHY")
+                            }
                         }
                     }
                 }
@@ -421,7 +486,7 @@ impl SystemHealthMonitor {
         let overall_status = self.get_overall_status();
         let components = self.get_all_component_statuses();
         let uptime = self.start_time.elapsed();
-        
+
         // Convert HealthCheckResult to ComponentHealthStatus for compatibility
         let component_health: HashMap<String, ComponentHealthStatus> = components
             .iter()
@@ -436,26 +501,45 @@ impl SystemHealthMonitor {
                 )
             })
             .collect();
-        
+
         SystemHealthReport {
             overall_status,
             components: components.clone(),
             component_health,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
             summary: self.generate_summary(&components),
             uptime,
         }
     }
 
     fn generate_summary(&self, components: &HashMap<String, HealthCheckResult>) -> String {
-        let healthy = components.values().filter(|r| r.status == HealthStatus::Healthy).count();
-        let degraded = components.values().filter(|r| r.status == HealthStatus::Degraded).count();
-        let unhealthy = components.values().filter(|r| r.status == HealthStatus::Unhealthy).count();
-        let critical = components.values().filter(|r| r.status == HealthStatus::Critical).count();
+        let healthy = components
+            .values()
+            .filter(|r| r.status == HealthStatus::Healthy)
+            .count();
+        let degraded = components
+            .values()
+            .filter(|r| r.status == HealthStatus::Degraded)
+            .count();
+        let unhealthy = components
+            .values()
+            .filter(|r| r.status == HealthStatus::Unhealthy)
+            .count();
+        let critical = components
+            .values()
+            .filter(|r| r.status == HealthStatus::Critical)
+            .count();
 
         format!(
             "{} components: {} healthy, {} degraded, {} unhealthy, {} critical",
-            components.len(), healthy, degraded, unhealthy, critical
+            components.len(),
+            healthy,
+            degraded,
+            unhealthy,
+            critical
         )
     }
 
@@ -465,12 +549,14 @@ impl SystemHealthMonitor {
         let mut worst_status = HealthStatus::Healthy;
 
         // Run all health checks concurrently
-        let check_futures: Vec<_> = self.health_checkers.iter().map(|checker| {
-            let checker = Arc::clone(checker);
-            tokio::spawn(async move {
-                checker.check_health().await
+        let check_futures: Vec<_> = self
+            .health_checkers
+            .iter()
+            .map(|checker| {
+                let checker = Arc::clone(checker);
+                tokio::spawn(async move { checker.check_health().await })
             })
-        }).collect();
+            .collect();
 
         for future in check_futures {
             match future.await {
@@ -478,7 +564,9 @@ impl SystemHealthMonitor {
                     // Update worst status
                     match result.status {
                         HealthStatus::Critical => worst_status = HealthStatus::Critical,
-                        HealthStatus::Unhealthy if !matches!(worst_status, HealthStatus::Critical) => {
+                        HealthStatus::Unhealthy
+                            if !matches!(worst_status, HealthStatus::Critical) =>
+                        {
                             worst_status = HealthStatus::Unhealthy;
                         }
                         HealthStatus::Degraded if matches!(worst_status, HealthStatus::Healthy) => {
@@ -492,14 +580,17 @@ impl SystemHealthMonitor {
                 Err(e) => {
                     log_error!(MAIN_LOGGER, "Health check task failed: {}", e);
                     worst_status = HealthStatus::Critical;
-                    
+
                     // Create error result for failed check
                     let error_result = HealthCheckResult {
                         component: "unknown".to_string(),
                         status: HealthStatus::Critical,
                         message: format!("Health check failed: {}", e),
                         response_time_ms: 0,
-                        timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+                        timestamp: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or(Duration::ZERO)
+                            .as_millis() as u64,
                         details: HashMap::new(),
                     };
                     check_results.insert("unknown".to_string(), error_result);
@@ -526,7 +617,10 @@ impl SystemHealthMonitor {
             overall_status: worst_status,
             components: check_results.clone(),
             component_health,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
             summary: self.generate_summary(&check_results),
             uptime: self.start_time.elapsed(),
         })
@@ -566,14 +660,45 @@ impl SystemHealthReport {
 
     /// Check if system needs immediate attention
     pub fn needs_immediate_attention(&self) -> bool {
-        matches!(self.overall_status, HealthStatus::Critical | HealthStatus::Unhealthy)
+        matches!(
+            self.overall_status,
+            HealthStatus::Critical | HealthStatus::Unhealthy
+        )
     }
 
     /// Get components that are not healthy
     pub fn get_problematic_components(&self) -> Vec<&HealthCheckResult> {
-        self.components.values()
+        self.components
+            .values()
             .filter(|result| !matches!(result.status, HealthStatus::Healthy))
             .collect()
+    }
+}
+
+/// Simple metrics collector for data pipeline compatibility
+pub struct MetricsCollector {
+    processing_count: AtomicU64,
+}
+
+impl Default for MetricsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MetricsCollector {
+    pub fn new() -> Self {
+        Self {
+            processing_count: AtomicU64::new(0),
+        }
+    }
+
+    pub fn record_processing_latency(&self, _latency: Duration) {
+        self.processing_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_trade(&self, _symbol: &str, _price: f64, _quantity: f64) {
+        self.processing_count.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -619,27 +744,27 @@ mod tests {
     async fn test_health_monitor() {
         let mut monitor = SystemHealthMonitor::new(Duration::from_millis(100));
         let checker = Arc::new(MockHealthChecker::new("test"));
-        
+
         monitor.add_health_checker(checker.clone());
-        
+
         // Start monitoring
         monitor.start().await.unwrap();
-        
+
         // Wait for first check
         tokio::time::sleep(Duration::from_millis(200)).await;
-        
+
         // Should be healthy
         assert_eq!(monitor.get_overall_status(), HealthStatus::Healthy);
-        
+
         // Make it fail
         checker.set_should_fail(true);
-        
+
         // Wait for check
         tokio::time::sleep(Duration::from_millis(200)).await;
-        
+
         // Should be unhealthy now
         assert_eq!(monitor.get_overall_status(), HealthStatus::Unhealthy);
-        
+
         monitor.stop();
     }
 
@@ -647,18 +772,19 @@ mod tests {
     async fn test_websocket_health_checker() {
         let is_connected = Arc::new(AtomicBool::new(true));
         let last_message_time = Arc::new(AtomicU64::new(
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_millis() as u64
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_millis() as u64,
         ));
-        
-        let checker = WebSocketHealthChecker::new(
-            Arc::clone(&is_connected), 
-            Arc::clone(&last_message_time)
-        );
-        
+
+        let checker =
+            WebSocketHealthChecker::new(Arc::clone(&is_connected), Arc::clone(&last_message_time));
+
         // Should be healthy
         let result = checker.check_health().await;
         assert_eq!(result.status, HealthStatus::Healthy);
-        
+
         // Disconnect
         is_connected.store(false, Ordering::Relaxed);
         let result = checker.check_health().await;
@@ -708,7 +834,10 @@ mod tests {
     fn test_health_report_problematic_components() {
         let mut components = HashMap::new();
         components.insert("ok".to_string(), HealthCheckResult::healthy("ok", 1));
-        components.insert("bad".to_string(), HealthCheckResult::unhealthy("bad", "down", 50));
+        components.insert(
+            "bad".to_string(),
+            HealthCheckResult::unhealthy("bad", "down", 50),
+        );
         let report = SystemHealthReport {
             overall_status: HealthStatus::Unhealthy,
             components,
@@ -730,25 +859,3 @@ mod tests {
         assert_eq!(collector.processing_count.load(Ordering::Relaxed), 2);
     }
 }
-
-/// Simple metrics collector for data pipeline compatibility
-pub struct MetricsCollector {
-    processing_count: AtomicU64,
-}
-
-impl MetricsCollector {
-    pub fn new() -> Self {
-        Self {
-            processing_count: AtomicU64::new(0),
-        }
-    }
-
-    pub fn record_processing_latency(&self, _latency: Duration) {
-        self.processing_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn record_trade(&self, _symbol: &str, _price: f64, _quantity: f64) {
-        self.processing_count.fetch_add(1, Ordering::Relaxed);
-    }
-}
-

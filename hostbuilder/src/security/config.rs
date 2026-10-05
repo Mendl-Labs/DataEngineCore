@@ -1,24 +1,24 @@
 //! Enhanced security configuration for DataEngine
-//! 
+//!
 //! Provides secure defaults, privilege reduction, and network hardening
 //! configurations to minimize attack surface and improve security posture.
 
-use std::path::PathBuf;
+use crate::{infrastructure::logging_facade::MAIN_LOGGER, log_error, log_info};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use thiserror::Error;
-use crate::{infrastructure::logging_facade::MAIN_LOGGER, log_info, log_error};
 
 #[derive(Debug, Error)]
 pub enum SecurityConfigError {
     #[error("Invalid security configuration: {0}")]
     InvalidConfig(String),
-    
+
     #[error("Privilege operation failed: {0}")]
     PrivilegeError(String),
-    
+
     #[error("Network configuration error: {0}")]
     NetworkError(String),
-    
+
     #[error("Missing required configuration: {0}")]
     MissingConfig(String),
 }
@@ -159,14 +159,12 @@ impl Default for SecurityConfig {
                     connection_timeout: 30,
                     keepalive_timeout: 300,
                 },
-                firewall_rules: vec![
-                    FirewallRule {
-                        direction: "inbound".to_string(),
-                        protocol: "tcp".to_string(),
-                        port_range: "8080".to_string(),
-                        allowed_ips: vec!["10.0.0.0/8".to_string(), "192.168.0.0/16".to_string()],
-                    },
-                ],
+                firewall_rules: vec![FirewallRule {
+                    direction: "inbound".to_string(),
+                    protocol: "tcp".to_string(),
+                    port_range: "8080".to_string(),
+                    allowed_ips: vec!["10.0.0.0/8".to_string(), "192.168.0.0/16".to_string()],
+                }],
             },
             monitoring_config: MonitoringConfig {
                 enable_security_logging: true,
@@ -198,8 +196,8 @@ impl Default for SecurityConfig {
                 enable_heap_protection: true,
                 secure_memory_allocation: true,
                 memory_limits: MemoryLimits {
-                    max_heap_size: 8 * 1024 * 1024 * 1024, // 8GB
-                    max_stack_size: 8 * 1024 * 1024,       // 8MB
+                    max_heap_size: 8 * 1024 * 1024 * 1024,       // 8GB
+                    max_stack_size: 8 * 1024 * 1024,             // 8MB
                     max_virtual_memory: 16 * 1024 * 1024 * 1024, // 16GB
                 },
             },
@@ -212,90 +210,129 @@ pub struct SecurityConfigManager {
     config: SecurityConfig,
 }
 
+impl Default for SecurityConfigManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SecurityConfigManager {
     pub fn new() -> Self {
         Self {
             config: SecurityConfig::default(),
         }
     }
-    
+
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> SecurityResult<Self> {
         let path_ref = path.as_ref();
-        log_info!(MAIN_LOGGER, "Loading security configuration from {:?}", path_ref);
-        let content = std::fs::read_to_string(path_ref)
-            .map_err(|e| {
-                log_error!(MAIN_LOGGER, "Failed to read security config file {:?}: {}", path_ref, e);
-                SecurityConfigError::InvalidConfig(e.to_string())
-            })?;
+        log_info!(
+            MAIN_LOGGER,
+            "Loading security configuration from {:?}",
+            path_ref
+        );
+        let content = std::fs::read_to_string(path_ref).map_err(|e| {
+            log_error!(
+                MAIN_LOGGER,
+                "Failed to read security config file {:?}: {}",
+                path_ref,
+                e
+            );
+            SecurityConfigError::InvalidConfig(e.to_string())
+        })?;
 
-        let config: SecurityConfig = serde_yaml::from_str(&content)
-            .map_err(|e| {
-                log_error!(MAIN_LOGGER, "Failed to parse security config file {:?}: {}", path_ref, e);
-                SecurityConfigError::InvalidConfig(e.to_string())
-            })?;
+        let config: SecurityConfig = serde_yaml::from_str(&content).map_err(|e| {
+            log_error!(
+                MAIN_LOGGER,
+                "Failed to parse security config file {:?}: {}",
+                path_ref,
+                e
+            );
+            SecurityConfigError::InvalidConfig(e.to_string())
+        })?;
 
-        log_info!(MAIN_LOGGER, "Security configuration loaded successfully from {:?}", path_ref);
+        log_info!(
+            MAIN_LOGGER,
+            "Security configuration loaded successfully from {:?}",
+            path_ref
+        );
         Ok(Self { config })
     }
-    
+
     pub fn validate_config(&self) -> SecurityResult<()> {
         // Validate privilege configuration
-        if self.config.privilege_config.drop_privileges {
-            if self.config.privilege_config.target_user.is_none() {
-                log_error!(MAIN_LOGGER, "Security config validation failed: target_user required when drop_privileges is enabled");
-                return Err(SecurityConfigError::MissingConfig(
-                    "target_user required when drop_privileges is enabled".to_string()
-                ));
-            }
+        if self.config.privilege_config.drop_privileges
+            && self.config.privilege_config.target_user.is_none()
+        {
+            log_error!(MAIN_LOGGER, "Security config validation failed: target_user required when drop_privileges is enabled");
+            return Err(SecurityConfigError::MissingConfig(
+                "target_user required when drop_privileges is enabled".to_string(),
+            ));
         }
 
         // Validate network configuration
-        if self.config.network_config.enable_tls {
-            if !["1.2", "1.3"].contains(&self.config.network_config.tls_version.as_str()) {
-                log_error!(MAIN_LOGGER, "Security config validation failed: unsupported TLS version '{}'", self.config.network_config.tls_version);
-                return Err(SecurityConfigError::InvalidConfig(
-                    "TLS version must be 1.2 or 1.3".to_string()
-                ));
-            }
+        if self.config.network_config.enable_tls
+            && !["1.2", "1.3"].contains(&self.config.network_config.tls_version.as_str())
+        {
+            log_error!(
+                MAIN_LOGGER,
+                "Security config validation failed: unsupported TLS version '{}'",
+                self.config.network_config.tls_version
+            );
+            return Err(SecurityConfigError::InvalidConfig(
+                "TLS version must be 1.2 or 1.3".to_string(),
+            ));
         }
 
         // Validate connection limits
         if self.config.network_config.connection_limits.max_connections == 0 {
-            log_error!(MAIN_LOGGER, "Security config validation failed: max_connections must be greater than 0");
+            log_error!(
+                MAIN_LOGGER,
+                "Security config validation failed: max_connections must be greater than 0"
+            );
             return Err(SecurityConfigError::InvalidConfig(
-                "max_connections must be greater than 0".to_string()
+                "max_connections must be greater than 0".to_string(),
             ));
         }
 
         // Validate memory limits
         if self.config.memory_protection.memory_limits.max_heap_size < 1024 * 1024 {
-            log_error!(MAIN_LOGGER, "Security config validation failed: max_heap_size {} is below minimum 1MB", self.config.memory_protection.memory_limits.max_heap_size);
+            log_error!(
+                MAIN_LOGGER,
+                "Security config validation failed: max_heap_size {} is below minimum 1MB",
+                self.config.memory_protection.memory_limits.max_heap_size
+            );
             return Err(SecurityConfigError::InvalidConfig(
-                "max_heap_size must be at least 1MB".to_string()
+                "max_heap_size must be at least 1MB".to_string(),
             ));
         }
 
         log_info!(MAIN_LOGGER, "Security configuration validated successfully");
         Ok(())
     }
-    
+
     /// Apply privilege reduction settings
     pub fn apply_privilege_reduction(&self) -> SecurityResult<()> {
         if !self.config.privilege_config.drop_privileges {
-            log_info!(MAIN_LOGGER, "Privilege reduction skipped: drop_privileges is disabled");
+            log_info!(
+                MAIN_LOGGER,
+                "Privilege reduction skipped: drop_privileges is disabled"
+            );
             return Ok(());
         }
 
-        log_info!(MAIN_LOGGER, "Applying privilege reduction (target_user={:?}, seccomp={}, disable_core_dumps={})",
+        log_info!(
+            MAIN_LOGGER,
+            "Applying privilege reduction (target_user={:?}, seccomp={}, disable_core_dumps={})",
             self.config.privilege_config.target_user,
             self.config.privilege_config.enable_seccomp,
-            self.config.privilege_config.disable_core_dumps);
+            self.config.privilege_config.disable_core_dumps
+        );
 
         // Disable core dumps if configured
         if self.config.privilege_config.disable_core_dumps {
             #[cfg(unix)]
             {
-                use libc::{setrlimit, RLIMIT_CORE, rlimit};
+                use libc::{rlimit, setrlimit, RLIMIT_CORE};
                 let rlim = rlimit {
                     rlim_cur: 0,
                     rlim_max: 0,
@@ -304,7 +341,7 @@ impl SecurityConfigManager {
                     if setrlimit(RLIMIT_CORE, &rlim) != 0 {
                         log_error!(MAIN_LOGGER, "Failed to disable core dumps via setrlimit");
                         return Err(SecurityConfigError::PrivilegeError(
-                            "Failed to disable core dumps".to_string()
+                            "Failed to disable core dumps".to_string(),
                         ));
                     }
                 }
@@ -321,26 +358,48 @@ impl SecurityConfigManager {
         log_info!(MAIN_LOGGER, "Privilege reduction applied successfully");
         Ok(())
     }
-    
+
     fn apply_memory_limits(&self) -> SecurityResult<()> {
         #[cfg(unix)]
         {
-            use libc::{setrlimit, RLIMIT_AS, RLIMIT_STACK, rlimit};
+            use libc::{rlimit, setrlimit, RLIMIT_AS, RLIMIT_STACK};
 
-            log_info!(MAIN_LOGGER, "Applying memory limits: virtual_memory={}MB, stack={}MB",
-                self.config.memory_protection.memory_limits.max_virtual_memory / (1024 * 1024),
-                self.config.memory_protection.memory_limits.max_stack_size / (1024 * 1024));
+            log_info!(
+                MAIN_LOGGER,
+                "Applying memory limits: virtual_memory={}MB, stack={}MB",
+                self.config
+                    .memory_protection
+                    .memory_limits
+                    .max_virtual_memory
+                    / (1024 * 1024),
+                self.config.memory_protection.memory_limits.max_stack_size / (1024 * 1024)
+            );
 
             // Set virtual memory limit
             let vm_limit = rlimit {
-                rlim_cur: self.config.memory_protection.memory_limits.max_virtual_memory,
-                rlim_max: self.config.memory_protection.memory_limits.max_virtual_memory,
+                rlim_cur: self
+                    .config
+                    .memory_protection
+                    .memory_limits
+                    .max_virtual_memory,
+                rlim_max: self
+                    .config
+                    .memory_protection
+                    .memory_limits
+                    .max_virtual_memory,
             };
             unsafe {
                 if setrlimit(RLIMIT_AS, &vm_limit) != 0 {
-                    log_error!(MAIN_LOGGER, "Failed to set virtual memory limit to {} bytes", self.config.memory_protection.memory_limits.max_virtual_memory);
+                    log_error!(
+                        MAIN_LOGGER,
+                        "Failed to set virtual memory limit to {} bytes",
+                        self.config
+                            .memory_protection
+                            .memory_limits
+                            .max_virtual_memory
+                    );
                     return Err(SecurityConfigError::PrivilegeError(
-                        "Failed to set virtual memory limit".to_string()
+                        "Failed to set virtual memory limit".to_string(),
                     ));
                 }
             }
@@ -352,9 +411,13 @@ impl SecurityConfigManager {
             };
             unsafe {
                 if setrlimit(RLIMIT_STACK, &stack_limit) != 0 {
-                    log_error!(MAIN_LOGGER, "Failed to set stack limit to {} bytes", self.config.memory_protection.memory_limits.max_stack_size);
+                    log_error!(
+                        MAIN_LOGGER,
+                        "Failed to set stack limit to {} bytes",
+                        self.config.memory_protection.memory_limits.max_stack_size
+                    );
                     return Err(SecurityConfigError::PrivilegeError(
-                        "Failed to set stack limit".to_string()
+                        "Failed to set stack limit".to_string(),
                     ));
                 }
             }
@@ -362,30 +425,36 @@ impl SecurityConfigManager {
 
         Ok(())
     }
-    
+
     fn drop_privileges(&self) -> SecurityResult<()> {
         #[cfg(unix)]
         {
             if let Some(target_user) = &self.config.privilege_config.target_user {
                 log_info!(MAIN_LOGGER, "Dropping privileges to user '{}'", target_user);
                 // Get user ID
+                use libc::{getpwnam, setgid, setuid};
                 use std::ffi::CString;
-                use libc::{getpwnam, setuid, setgid};
 
-                let c_user = CString::new(target_user.as_str())
-                    .map_err(|_| {
-                        log_error!(MAIN_LOGGER, "Privilege drop failed: invalid username encoding for '{}'", target_user);
-                        SecurityConfigError::PrivilegeError(
-                            "Invalid username".to_string()
-                        )
-                    })?;
+                let c_user = CString::new(target_user.as_str()).map_err(|_| {
+                    log_error!(
+                        MAIN_LOGGER,
+                        "Privilege drop failed: invalid username encoding for '{}'",
+                        target_user
+                    );
+                    SecurityConfigError::PrivilegeError("Invalid username".to_string())
+                })?;
 
                 let passwd = unsafe { getpwnam(c_user.as_ptr()) };
                 if passwd.is_null() {
-                    log_error!(MAIN_LOGGER, "Privilege drop failed: user '{}' not found on system", target_user);
-                    return Err(SecurityConfigError::PrivilegeError(
-                        format!("User {} not found", target_user)
-                    ));
+                    log_error!(
+                        MAIN_LOGGER,
+                        "Privilege drop failed: user '{}' not found on system",
+                        target_user
+                    );
+                    return Err(SecurityConfigError::PrivilegeError(format!(
+                        "User {} not found",
+                        target_user
+                    )));
                 }
 
                 let uid = unsafe { (*passwd).pw_uid };
@@ -394,9 +463,13 @@ impl SecurityConfigManager {
                 // Drop group privileges first
                 unsafe {
                     if setgid(gid) != 0 {
-                        log_error!(MAIN_LOGGER, "Privilege drop failed: setgid({}) returned error", gid);
+                        log_error!(
+                            MAIN_LOGGER,
+                            "Privilege drop failed: setgid({}) returned error",
+                            gid
+                        );
                         return Err(SecurityConfigError::PrivilegeError(
-                            "Failed to drop group privileges".to_string()
+                            "Failed to drop group privileges".to_string(),
                         ));
                     }
                 }
@@ -404,20 +477,29 @@ impl SecurityConfigManager {
                 // Drop user privileges
                 unsafe {
                     if setuid(uid) != 0 {
-                        log_error!(MAIN_LOGGER, "Privilege drop failed: setuid({}) returned error", uid);
+                        log_error!(
+                            MAIN_LOGGER,
+                            "Privilege drop failed: setuid({}) returned error",
+                            uid
+                        );
                         return Err(SecurityConfigError::PrivilegeError(
-                            "Failed to drop user privileges".to_string()
+                            "Failed to drop user privileges".to_string(),
                         ));
                     }
                 }
 
-                log_info!(MAIN_LOGGER, "Privileges dropped successfully to uid={}, gid={}", uid, gid);
+                log_info!(
+                    MAIN_LOGGER,
+                    "Privileges dropped successfully to uid={}, gid={}",
+                    uid,
+                    gid
+                );
             }
         }
 
         Ok(())
     }
-    
+
     /// Apply network security settings
     pub fn apply_network_security(&self) -> SecurityResult<()> {
         log_info!(MAIN_LOGGER, "Applying network security: tls={}, tls_version={}, bind_specific={}, max_connections={}",
@@ -432,11 +514,14 @@ impl SecurityConfigManager {
         // Apply connection limits
         self.apply_connection_limits()?;
 
-        log_info!(MAIN_LOGGER, "Network security hardening applied successfully ({} firewall rules configured)",
-            self.config.network_config.firewall_rules.len());
+        log_info!(
+            MAIN_LOGGER,
+            "Network security hardening applied successfully ({} firewall rules configured)",
+            self.config.network_config.firewall_rules.len()
+        );
         Ok(())
     }
-    
+
     fn configure_socket_security(&self) -> SecurityResult<()> {
         // This would typically configure socket options like:
         // - SO_REUSEADDR security
@@ -445,7 +530,7 @@ impl SecurityConfigManager {
         // Implementation depends on specific socket library used
         Ok(())
     }
-    
+
     fn apply_connection_limits(&self) -> SecurityResult<()> {
         // Implementation would configure:
         // - Connection rate limiting
@@ -454,12 +539,12 @@ impl SecurityConfigManager {
         // This typically integrates with the WebSocket/HTTP server
         Ok(())
     }
-    
+
     /// Get security configuration
     pub fn get_config(&self) -> &SecurityConfig {
         &self.config
     }
-    
+
     /// Update specific security settings
     pub fn update_config<F>(&mut self, updater: F) -> SecurityResult<()>
     where
@@ -475,7 +560,7 @@ impl SecurityConfigManager {
 pub mod security_utils {
     #[allow(unused_imports)]
     use super::*;
-    
+
     /// Check if running with root privileges
     pub fn is_running_as_root() -> bool {
         #[cfg(unix)]
@@ -487,7 +572,7 @@ pub mod security_utils {
             false // Windows privilege checking is more complex
         }
     }
-    
+
     /// Secure random number generation
     pub fn generate_secure_random(size: usize) -> Vec<u8> {
         use rand::RngCore;
@@ -496,7 +581,7 @@ pub mod security_utils {
         rng.fill_bytes(&mut buffer);
         buffer
     }
-    
+
     /// Secure memory zeroing
     pub fn secure_zero_memory(buffer: &mut [u8]) {
         // Use volatile writes to prevent compiler optimization
@@ -506,11 +591,11 @@ pub mod security_utils {
             }
         }
     }
-    
+
     /// Check if address is in private IP range
     pub fn is_private_ip(ip: &str) -> bool {
         use std::net::IpAddr;
-        
+
         if let Ok(addr) = ip.parse::<IpAddr>() {
             match addr {
                 IpAddr::V4(ipv4) => {
@@ -526,8 +611,7 @@ pub mod security_utils {
                 }
                 IpAddr::V6(ipv6) => {
                     // Check for loopback and private ranges
-                    ipv6.is_loopback() || 
-                    ipv6.segments()[0] & 0xfe00 == 0xfc00 // fc00::/7
+                    ipv6.is_loopback() || ipv6.segments()[0] & 0xfe00 == 0xfc00 // fc00::/7
                 }
             }
         } else {
@@ -539,7 +623,7 @@ pub mod security_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_default_security_config() {
         let config = SecurityConfig::default();
@@ -547,26 +631,26 @@ mod tests {
         assert!(config.network_config.enable_tls);
         assert_eq!(config.network_config.tls_version, "1.3");
     }
-    
+
     #[test]
     fn test_security_config_validation() {
         let manager = SecurityConfigManager::new();
         assert!(manager.validate_config().is_ok());
     }
-    
+
     #[test]
     fn test_security_utils() {
         use security_utils::*;
-        
+
         // Test private IP detection
         assert!(is_private_ip("192.168.1.1"));
         assert!(is_private_ip("10.0.0.1"));
         assert!(!is_private_ip("8.8.8.8"));
-        
+
         // Test secure random generation
         let random_data = generate_secure_random(32);
         assert_eq!(random_data.len(), 32);
-        
+
         // Test secure memory zeroing
         let mut buffer = vec![0xaa; 16];
         secure_zero_memory(&mut buffer);

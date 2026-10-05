@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast::Receiver, RwLock};
 
+use crate::infrastructure::logging_facade::OANDA_LOGGER;
 use crate::network::endpoint::EndpointHandler;
 use crate::network::handlers::websockets::massive::BarAggregator;
-use crate::infrastructure::logging_facade::OANDA_LOGGER;
-use crate::{log_info, log_warn, log_error, log_debug};
+use crate::{log_debug, log_error, log_info, log_warn};
 
 /// Nominal per-level "depth" carried on Oanda's synthesized pseudo-trades
 /// (see `OandaStreamHandler::process_tick`'s doc). Oanda has no real L2
@@ -115,16 +115,24 @@ impl OandaStreamHandler {
 
         let database_only_mode = std::env::var("DATABASE_ONLY_MODE")
             .unwrap_or_default()
-            .to_lowercase() == "true"
+            .to_lowercase()
+            == "true"
             || std::env::var("DISABLE_MESSAGE_BROKER")
                 .unwrap_or_default()
-                .to_lowercase() == "true";
+                .to_lowercase()
+                == "true";
 
         let publisher = if database_only_mode {
-            log_info!(OANDA_LOGGER, "DATABASE-ONLY MODE: Message broker publishing disabled");
+            log_info!(
+                OANDA_LOGGER,
+                "DATABASE-ONLY MODE: Message broker publishing disabled"
+            );
             None
         } else {
-            let addr = format!("{}:{}", config.message_broker.address, config.message_broker.port);
+            let addr = format!(
+                "{}:{}",
+                config.message_broker.address, config.message_broker.port
+            );
             let publisher_config = PublisherConfig::new(&addr);
             Some(Arc::new(tokio::sync::Mutex::new(
                 Publisher::new(publisher_config)
@@ -208,7 +216,9 @@ impl OandaStreamHandler {
             trade_id: String::new(),
         };
 
-        let trades_payload = Trades { trades: vec![trade_msg] };
+        let trades_payload = Trades {
+            trades: vec![trade_msg],
+        };
         let market_message = MarketMessage {
             market_id: "oanda_price".to_string(),
             payload: Some(market_message::Payload::TradesPayload(trades_payload)),
@@ -228,7 +238,11 @@ impl OandaStreamHandler {
         };
 
         if let Some(publisher_ref) = &self.publisher {
-            match publisher_ref.lock().await.publish(prost::Message::encode_to_vec(&request), &topic_name) {
+            match publisher_ref
+                .lock()
+                .await
+                .publish(prost::Message::encode_to_vec(&request), &topic_name)
+            {
                 Ok(_) => {
                     let now_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -237,15 +251,27 @@ impl OandaStreamHandler {
                     self.last_message_time.store(now_ms, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    log_error!(OANDA_LOGGER, "Failed to publish price for {}: {:?}", symbol, e);
+                    log_error!(
+                        OANDA_LOGGER,
+                        "Failed to publish price for {}: {:?}",
+                        symbol,
+                        e
+                    );
                 }
             }
 
-            if let Some(bar) = self.bar_aggregator.ingest(&symbol, "oanda", mid, 1.0, timestamp * 1000) {
+            if let Some(bar) =
+                self.bar_aggregator
+                    .ingest(&symbol, "oanda", mid, 1.0, timestamp * 1000)
+            {
                 self.publish_bar(publisher_ref, bar).await;
             }
         } else {
-            log_debug!(OANDA_LOGGER, "STREAM-ONLY MODE: skipping publish for {}", symbol);
+            log_debug!(
+                OANDA_LOGGER,
+                "STREAM-ONLY MODE: skipping publish for {}",
+                symbol
+            );
         }
     }
 
@@ -266,7 +292,11 @@ impl OandaStreamHandler {
             topic: envelope_topic,
             payload: Some(publish_request::Payload::MarketPayload(market_message)),
         };
-        if let Err(e) = publisher_ref.lock().await.publish(prost::Message::encode_to_vec(&request), &bars_topic) {
+        if let Err(e) = publisher_ref
+            .lock()
+            .await
+            .publish(prost::Message::encode_to_vec(&request), &bars_topic)
+        {
             log_error!(OANDA_LOGGER, "Failed to publish bar: {:?}", e);
         }
     }
@@ -319,7 +349,8 @@ impl OandaStreamHandler {
         let mut line_buf: Vec<u8> = Vec::new();
 
         while let Some(chunk) = byte_stream.next().await {
-            let chunk = chunk.map_err(|e| anyhow::anyhow!("Oanda pricing stream read error: {}", e))?;
+            let chunk =
+                chunk.map_err(|e| anyhow::anyhow!("Oanda pricing stream read error: {}", e))?;
             line_buf.extend_from_slice(&chunk);
 
             while let Some(newline_pos) = line_buf.iter().position(|&b| b == b'\n') {
@@ -350,7 +381,10 @@ impl OandaStreamHandler {
             }
         }
 
-        log_warn!(OANDA_LOGGER, "Oanda pricing stream ended (connection closed)");
+        log_warn!(
+            OANDA_LOGGER,
+            "Oanda pricing stream ended (connection closed)"
+        );
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(true)
     }
@@ -414,7 +448,7 @@ pub fn get_oanda_stream_url() -> String {
 /// Converts this platform's dash symbol convention (e.g. "USD-ZAR", or
 /// "USD/ZAR") to Oanda's underscore instrument convention (e.g. "USD_ZAR").
 fn to_oanda_instrument(symbol: &str) -> String {
-    symbol.trim().to_uppercase().replace('-', "_").replace('/', "_")
+    symbol.trim().to_uppercase().replace(['-', '/'], "_")
 }
 
 /// Converts an Oanda instrument name (e.g. "USD_ZAR") back to this
@@ -440,7 +474,9 @@ fn midpoint_from_levels(bids: &[OandaPriceLevel], asks: &[OandaPriceLevel]) -> O
 /// Parses Oanda's RFC3339 pricing-tick timestamp (e.g.
 /// "2020-06-25T20:36:36.643927416Z") into Unix seconds.
 fn parse_oanda_timestamp(time: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(time).ok().map(|dt| dt.timestamp())
+    chrono::DateTime::parse_from_rfc3339(time)
+        .ok()
+        .map(|dt| dt.timestamp())
 }
 
 #[cfg(test)]
@@ -461,21 +497,29 @@ mod tests {
 
     #[test]
     fn midpoint_from_levels_averages_bid_and_ask() {
-        let bids = vec![OandaPriceLevel { price: "1.1000".to_string() }];
-        let asks = vec![OandaPriceLevel { price: "1.1002".to_string() }];
+        let bids = vec![OandaPriceLevel {
+            price: "1.1000".to_string(),
+        }];
+        let asks = vec![OandaPriceLevel {
+            price: "1.1002".to_string(),
+        }];
         let mid = midpoint_from_levels(&bids, &asks).unwrap();
         assert!((mid - 1.1001).abs() < 1e-9, "expected ~1.1001, got {mid}");
     }
 
     #[test]
     fn midpoint_from_levels_falls_back_to_bid_only() {
-        let bids = vec![OandaPriceLevel { price: "1.1000".to_string() }];
+        let bids = vec![OandaPriceLevel {
+            price: "1.1000".to_string(),
+        }];
         assert_eq!(midpoint_from_levels(&bids, &[]), Some(1.1000));
     }
 
     #[test]
     fn midpoint_from_levels_falls_back_to_ask_only() {
-        let asks = vec![OandaPriceLevel { price: "1.1002".to_string() }];
+        let asks = vec![OandaPriceLevel {
+            price: "1.1002".to_string(),
+        }];
         assert_eq!(midpoint_from_levels(&[], &asks), Some(1.1002));
     }
 
@@ -524,7 +568,12 @@ mod tests {
     #[test]
     fn get_oanda_stream_url_defaults_to_practice() {
         // SAFETY: test-only env manipulation, single-threaded within this test.
-        unsafe { std::env::remove_var("OANDA_STREAM_URL"); }
-        assert_eq!(get_oanda_stream_url(), "https://stream-fxpractice.oanda.com");
+        unsafe {
+            std::env::remove_var("OANDA_STREAM_URL");
+        }
+        assert_eq!(
+            get_oanda_stream_url(),
+            "https://stream-fxpractice.oanda.com"
+        );
     }
 }

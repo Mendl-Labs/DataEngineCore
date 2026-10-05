@@ -1,5 +1,5 @@
 //! Network module
-//! 
+//!
 //! This module contains all network communication functionality including:
 //! - API endpoints and HTTP servers
 //! - WebSocket and REST handlers  

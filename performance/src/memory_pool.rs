@@ -1,25 +1,25 @@
 //! Ultra-high performance memory pools for zero-copy trading operations
-//! 
+//!
 //! Provides NUMA-aware, lock-free memory pools with sub-microsecond allocation
 //! and deallocation for trading system critical paths.
 
-use std::sync::atomic::{AtomicPtr, AtomicUsize, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::alloc::{Layout, alloc};
-use std::ptr::{self, NonNull};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use crossbeam::utils::CachePadded;
+use std::alloc::{alloc, Layout};
+use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// Ultra-fast memory pool for trading operations
 pub struct BufferPool {
     // Lock-free stack of available buffers
     free_buffers: CachePadded<AtomicPtr<PoolNode>>,
-    
+
     // Pool statistics
     total_buffers: AtomicUsize,
     allocated_buffers: AtomicUsize,
     allocation_count: AtomicU64,
-    
+
     // Configuration
     buffer_size: usize,
     buffer_alignment: usize,
@@ -56,9 +56,15 @@ impl BufferPool {
             pool.push_free_buffer(Box::into_raw(node));
         }
 
-        pool.total_buffers.store(initial_pool_size, Ordering::Relaxed);
+        pool.total_buffers
+            .store(initial_pool_size, Ordering::Relaxed);
 
-        crate::perf_log_info!("BufferPool created: buffer_size={} initial_pool_size={} alignment={}", buffer_size, initial_pool_size, alignment);
+        crate::perf_log_info!(
+            "BufferPool created: buffer_size={} initial_pool_size={} alignment={}",
+            buffer_size,
+            initial_pool_size,
+            alignment
+        );
 
         Ok(pool)
     }
@@ -100,10 +106,10 @@ impl BufferPool {
             buffer: buffer.buffer,
             size: buffer.size,
         }));
-        
+
         self.push_free_buffer(node);
         self.allocated_buffers.fetch_sub(1, Ordering::Relaxed);
-        
+
         // Prevent drop from running
         std::mem::forget(buffer);
     }
@@ -118,9 +124,9 @@ impl BufferPool {
             eprintln!("[PERFORMANCE ERROR] BufferPool allocation failure: could not allocate {} bytes with alignment {}", self.buffer_size, self.buffer_alignment);
             return Err(anyhow!("Failed to allocate buffer"));
         }
-        
+
         let buffer = unsafe { NonNull::new_unchecked(ptr) };
-        
+
         Ok(Box::new(PoolNode {
             next: ptr::null_mut(),
             buffer,
@@ -136,13 +142,12 @@ impl BufferPool {
             unsafe {
                 (*node).next = head;
             }
-            
-            if self.free_buffers.compare_exchange_weak(
-                head,
-                node,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ).is_ok() {
+
+            if self
+                .free_buffers
+                .compare_exchange_weak(head, node, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
                 break;
             }
         }
@@ -156,15 +161,14 @@ impl BufferPool {
             if head.is_null() {
                 return None;
             }
-            
+
             let next = unsafe { (*head).next };
-            
-            if self.free_buffers.compare_exchange_weak(
-                head,
-                next,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ).is_ok() {
+
+            if self
+                .free_buffers
+                .compare_exchange_weak(head, next, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
                 return Some(unsafe { Box::from_raw(head) });
             }
         }
@@ -175,7 +179,9 @@ impl BufferPool {
         PoolStats {
             total_buffers: self.total_buffers.load(Ordering::Relaxed),
             allocated_buffers: self.allocated_buffers.load(Ordering::Relaxed),
-            free_buffers: self.total_buffers.load(Ordering::Relaxed)
+            free_buffers: self
+                .total_buffers
+                .load(Ordering::Relaxed)
                 .saturating_sub(self.allocated_buffers.load(Ordering::Relaxed)),
             allocation_count: self.allocation_count.load(Ordering::Relaxed),
             buffer_size: self.buffer_size,
@@ -223,6 +229,12 @@ impl PooledBuffer {
     pub fn len(&self) -> usize {
         self.size
     }
+
+    /// Returns true if the buffer has zero length
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
 }
 
 impl Drop for PooledBuffer {
@@ -264,7 +276,12 @@ impl NumaBufferPool {
             pools.push(Arc::new(BufferPool::new(buffer_size, pool_size_per_node)?));
         }
 
-        crate::perf_log_info!("NumaBufferPool created: {} NUMA nodes, buffer_size={}, pool_size_per_node={}", numa_nodes, buffer_size, pool_size_per_node);
+        crate::perf_log_info!(
+            "NumaBufferPool created: {} NUMA nodes, buffer_size={}, pool_size_per_node={}",
+            numa_nodes,
+            buffer_size,
+            pool_size_per_node
+        );
 
         Ok(Self { pools, numa_nodes })
     }
@@ -285,11 +302,7 @@ impl NumaBufferPool {
                 .map(|entries| {
                     entries
                         .filter_map(|entry| entry.ok())
-                        .filter(|entry| {
-                            entry.file_name()
-                                .to_string_lossy()
-                                .starts_with("node")
-                        })
+                        .filter(|entry| entry.file_name().to_string_lossy().starts_with("node"))
                         .count()
                 })
                 .unwrap_or(1)
@@ -308,7 +321,7 @@ impl NumaBufferPool {
         // For now, use a simple hash as approximation
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         thread_local! {
             static NUMA_NODE: usize = {
                 let mut hasher = DefaultHasher::new();
@@ -316,7 +329,7 @@ impl NumaBufferPool {
                 (hasher.finish() as usize) % 4 // Assume 4 NUMA nodes
             };
         }
-        
+
         NUMA_NODE.with(|&node| node)
     }
 
@@ -333,9 +346,13 @@ static INIT_POOL: std::sync::Once = std::sync::Once::new();
 /// Initialize global buffer pool
 pub fn init_global_pool(buffer_size: usize, pool_size: usize) -> Result<()> {
     INIT_POOL.call_once(|| {
-        crate::perf_log_info!("Initializing global buffer pool: buffer_size={}, pool_size={}", buffer_size, pool_size);
-        let pool = BufferPool::new(buffer_size, pool_size)
-            .expect("Failed to create global buffer pool");
+        crate::perf_log_info!(
+            "Initializing global buffer pool: buffer_size={}, pool_size={}",
+            buffer_size,
+            pool_size
+        );
+        let pool =
+            BufferPool::new(buffer_size, pool_size).expect("Failed to create global buffer pool");
         unsafe {
             GLOBAL_BUFFER_POOL = Some(Arc::new(pool));
         }
@@ -359,30 +376,30 @@ pub fn get_global_buffer() -> Result<PooledBuffer> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_buffer_pool_basic() {
         let pool = BufferPool::new(1024, 10).unwrap();
-        
+
         let buffer1 = pool.get_buffer().unwrap();
         let buffer2 = pool.get_buffer().unwrap();
-        
+
         assert_eq!(buffer1.len(), 1024);
         assert_eq!(buffer2.len(), 1024);
-        
+
         let stats = pool.stats();
         assert_eq!(stats.allocated_buffers, 2);
     }
-    
+
     #[test]
     fn test_buffer_return() {
         let pool = BufferPool::new(1024, 5).unwrap();
-        
+
         {
             let _buffer = pool.get_buffer().unwrap();
             assert_eq!(pool.stats().allocated_buffers, 1);
         }
-        
+
         // Buffer should be returned automatically
         assert_eq!(pool.stats().allocated_buffers, 0);
     }

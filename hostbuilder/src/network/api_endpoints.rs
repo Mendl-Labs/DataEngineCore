@@ -1,8 +1,11 @@
 //! API endpoints for DataEngine monitoring and management
-//! 
+//!
 //! Provides REST API endpoints for health checks, metrics, configuration,
 //! and system management.
 
+use crate::infrastructure::logging_facade::MAIN_LOGGER;
+use crate::{log_error, log_info};
+use anyhow::{anyhow, Result};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -13,14 +16,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use anyhow::{Result, anyhow};
-use crate::infrastructure::logging_facade::MAIN_LOGGER; 
-use crate::{log_info, log_error};
 
+use crate::infrastructure::monitoring::{HealthStatus, SystemHealthMonitor};
+use crate::security::SecurityManager;
 use config::ConfigManager;
 use performance::PerformanceMetrics;
-use crate::infrastructure::monitoring::{SystemHealthMonitor, HealthStatus};
-use crate::security::SecurityManager;
 
 /// Application state for API handlers
 #[derive(Clone)]
@@ -137,8 +137,8 @@ pub fn create_api_router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/health/detailed", get(detailed_health_check))
-        .route("/startup", get(startup_check))  // Kubernetes startup probe
-        .route("/ready", get(readiness_check))  // Kubernetes readiness probe
+        .route("/startup", get(startup_check)) // Kubernetes startup probe
+        .route("/ready", get(readiness_check)) // Kubernetes readiness probe
         .route("/metrics", get(get_metrics))
         .route("/metrics/reset", post(reset_metrics))
         .route("/config", get(get_config))
@@ -154,16 +154,10 @@ pub async fn health_check(
     State(state): State<ApiState>,
 ) -> Result<Json<ApiResponse<&'static str>>, StatusCode> {
     match state.health_monitor.check_health().await {
-        Ok(report) => {
-            match report.overall_status {
-                HealthStatus::Healthy => {
-                    Ok(Json(ApiResponse::success("OK")))
-                }
-                _ => {
-                    Err(StatusCode::SERVICE_UNAVAILABLE)
-                }
-            }
-        }
+        Ok(report) => match report.overall_status {
+            HealthStatus::Healthy => Ok(Json(ApiResponse::success("OK"))),
+            _ => Err(StatusCode::SERVICE_UNAVAILABLE),
+        },
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
@@ -187,16 +181,12 @@ pub async fn readiness_check(
     match state.health_monitor.check_health().await {
         Ok(report) => {
             match report.overall_status {
-                HealthStatus::Healthy => {
-                    Ok(Json(ApiResponse::success("READY")))
-                }
+                HealthStatus::Healthy => Ok(Json(ApiResponse::success("READY"))),
                 HealthStatus::Degraded => {
                     // Still ready but degraded
                     Ok(Json(ApiResponse::success("READY")))
                 }
-                _ => {
-                    Err(StatusCode::SERVICE_UNAVAILABLE)
-                }
+                _ => Err(StatusCode::SERVICE_UNAVAILABLE),
             }
         }
         Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
@@ -210,7 +200,7 @@ pub async fn detailed_health_check(
     match state.health_monitor.check_health().await {
         Ok(report) => {
             let mut components = HashMap::new();
-            
+
             for (component, status) in report.component_health {
                 components.insert(
                     component,
@@ -253,14 +243,14 @@ pub async fn get_metrics(
     State(state): State<ApiState>,
 ) -> Result<Json<ApiResponse<MetricsResponse>>, StatusCode> {
     let snapshot = state.metrics.get_metrics_snapshot();
-    
+
     // Get system metrics (in a real implementation, use proper system monitoring)
     let system_metrics = SystemMetricsDto {
         cpu_usage_percent: 0.0, // TODO: Implement actual CPU monitoring
-        memory_usage_mb: 0,      // TODO: Implement actual memory monitoring
+        memory_usage_mb: 0,     // TODO: Implement actual memory monitoring
         memory_usage_percent: 0.0,
-        active_connections: 0,   // TODO: Track active connections
-        heap_size_mb: 0,        // TODO: Track heap size
+        active_connections: 0, // TODO: Track active connections
+        heap_size_mb: 0,       // TODO: Track heap size
     };
 
     let performance_metrics = PerformanceMetricsDto {
@@ -299,7 +289,7 @@ pub async fn get_config(
     State(state): State<ApiState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, StatusCode> {
     let config_arc = state.config_manager.get_config();
-    
+
     let json_value = {
         let config_guard = match config_arc.read() {
             Ok(guard) => guard,
@@ -339,12 +329,21 @@ pub async fn update_config(
     let result = state.config_manager.update_config(|config| {
         // Update exchange configuration
         if let Some(exchange_name) = &payload.exchange_name {
-            if let Some(exchange) = config.exchanges.iter_mut().find(|e| &e.name == exchange_name) {
+            if let Some(exchange) = config
+                .exchanges
+                .iter_mut()
+                .find(|e| &e.name == exchange_name)
+            {
                 if let Some(enabled) = payload.enabled {
                     exchange.enabled = enabled;
-                    log_info!(MAIN_LOGGER, "Exchange {} enabled status updated to: {}", exchange_name, enabled);
+                    log_info!(
+                        MAIN_LOGGER,
+                        "Exchange {} enabled status updated to: {}",
+                        exchange_name,
+                        enabled
+                    );
                 }
-                
+
                 if let Some(symbols) = &payload.symbols {
                     exchange.symbols = symbols.clone();
                     log_info!(MAIN_LOGGER, "Exchange {} symbols updated", exchange_name);
@@ -358,15 +357,23 @@ pub async fn update_config(
                 config.performance.worker_threads = worker_threads;
                 log_info!(MAIN_LOGGER, "Worker threads updated to: {}", worker_threads);
             }
-            
+
             if let Some(cpu_affinity_enabled) = perf_config.cpu_affinity_enabled {
                 config.performance.cpu_affinity_enabled = cpu_affinity_enabled;
-                log_info!(MAIN_LOGGER, "CPU affinity enabled updated to: {}", cpu_affinity_enabled);
+                log_info!(
+                    MAIN_LOGGER,
+                    "CPU affinity enabled updated to: {}",
+                    cpu_affinity_enabled
+                );
             }
-            
+
             if let Some(metrics_enabled) = perf_config.metrics_enabled {
                 config.performance.metrics_enabled = metrics_enabled;
-                log_info!(MAIN_LOGGER, "Metrics enabled updated to: {}", metrics_enabled);
+                log_info!(
+                    MAIN_LOGGER,
+                    "Metrics enabled updated to: {}",
+                    metrics_enabled
+                );
             }
         }
 
@@ -374,22 +381,38 @@ pub async fn update_config(
         if let Some(sec_config) = &payload.security {
             if let Some(api_key_required) = sec_config.api_key_required {
                 config.security.api_key_required = api_key_required;
-                log_info!(MAIN_LOGGER, "API key required updated to: {}", api_key_required);
+                log_info!(
+                    MAIN_LOGGER,
+                    "API key required updated to: {}",
+                    api_key_required
+                );
             }
-            
+
             if let Some(request_signing_required) = sec_config.request_signing_required {
                 config.security.request_signing_required = request_signing_required;
-                log_info!(MAIN_LOGGER, "Request signing required updated to: {}", request_signing_required);
+                log_info!(
+                    MAIN_LOGGER,
+                    "Request signing required updated to: {}",
+                    request_signing_required
+                );
             }
-            
+
             if let Some(rate_limiting_enabled) = sec_config.rate_limiting_enabled {
                 config.security.rate_limiting_enabled = rate_limiting_enabled;
-                log_info!(MAIN_LOGGER, "Rate limiting enabled updated to: {}", rate_limiting_enabled);
+                log_info!(
+                    MAIN_LOGGER,
+                    "Rate limiting enabled updated to: {}",
+                    rate_limiting_enabled
+                );
             }
-            
+
             if let Some(max_requests_per_minute) = sec_config.max_requests_per_minute {
                 config.security.max_requests_per_minute = max_requests_per_minute;
-                log_info!(MAIN_LOGGER, "Max requests per minute updated to: {}", max_requests_per_minute);
+                log_info!(
+                    MAIN_LOGGER,
+                    "Max requests per minute updated to: {}",
+                    max_requests_per_minute
+                );
             }
         }
 
@@ -399,7 +422,9 @@ pub async fn update_config(
     match result {
         Ok(_) => {
             log_info!(MAIN_LOGGER, "Configuration updated successfully via API");
-            Ok(Json(ApiResponse::success("Configuration updated successfully")))
+            Ok(Json(ApiResponse::success(
+                "Configuration updated successfully",
+            )))
         }
         Err(e) => {
             log_error!(MAIN_LOGGER, "Failed to update configuration: {}", e);
@@ -415,11 +440,13 @@ pub async fn reload_config(
     match state.config_manager.reload_if_changed() {
         Ok(true) => {
             log_info!(MAIN_LOGGER, "Configuration reloaded successfully via API");
-            Ok(Json(ApiResponse::success("Configuration reloaded successfully")))
+            Ok(Json(ApiResponse::success(
+                "Configuration reloaded successfully",
+            )))
         }
-        Ok(false) => {
-            Ok(Json(ApiResponse::success("Configuration is already up to date")))
-        }
+        Ok(false) => Ok(Json(ApiResponse::success(
+            "Configuration is already up to date",
+        ))),
         Err(e) => {
             log_error!(MAIN_LOGGER, "Failed to reload configuration: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -431,11 +458,14 @@ pub async fn reload_config(
 pub async fn get_status(
     State(state): State<ApiState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, StatusCode> {
-    let health_report = state.health_monitor.check_health().await
+    let health_report = state
+        .health_monitor
+        .check_health()
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+
     let metrics_snapshot = state.metrics.get_metrics_snapshot();
-    
+
     let status = serde_json::json!({
         "service": "DataEngine",
         "version": env!("CARGO_PKG_VERSION"),
@@ -466,41 +496,45 @@ pub async fn get_security_events(
     State(state): State<ApiState>,
 ) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, StatusCode> {
     let events = state.security_manager.get_security_events(Some(100));
-    let event_data: Vec<serde_json::Value> = events.into_iter()
-        .map(|event| serde_json::json!({
-            "event_type": format!("{:?}", event.event_type),
-            "severity": format!("{:?}", event.severity),
-            "source_ip": event.source_ip,
-            "api_key": event.api_key,
-            "timestamp": event.timestamp,
-            "details": event.details,
-        }))
+    let event_data: Vec<serde_json::Value> = events
+        .into_iter()
+        .map(|event| {
+            serde_json::json!({
+                "event_type": format!("{:?}", event.event_type),
+                "severity": format!("{:?}", event.severity),
+                "source_ip": event.source_ip,
+                "api_key": event.api_key,
+                "timestamp": event.timestamp,
+                "details": event.details,
+            })
+        })
         .collect();
-        
+
     Ok(Json(ApiResponse::success(event_data)))
 }
 
 /// Start the API server
-pub async fn start_api_server(
-    state: ApiState,
-    bind_address: &str,
-    port: u16,
-) -> Result<()> {
+pub async fn start_api_server(state: ApiState, bind_address: &str, port: u16) -> Result<()> {
     let _app = create_api_router(state);
     let addr = format!("{}:{}", bind_address, port);
-    
+
     log_info!(MAIN_LOGGER, "Starting API server on {}", addr);
-    
-    let _listener = tokio::net::TcpListener::bind(&addr).await
+
+    let _listener = tokio::net::TcpListener::bind(&addr)
+        .await
         .map_err(|e| anyhow!("Failed to bind to {}: {}", addr, e))?;
-    
+
     // Temporarily disable the server to fix compilation
-    log_info!(MAIN_LOGGER, "API server would start on {} but serving is disabled for now", addr);
-    
+    log_info!(
+        MAIN_LOGGER,
+        "API server would start on {} but serving is disabled for now",
+        addr
+    );
+
     // TODO: Re-enable server once axum serve API is resolved
     // axum::serve(listener, app).await
     //     .map_err(|e| anyhow!("Server error: {}", e))?;
-    
+
     Ok(())
 }
 
@@ -512,7 +546,7 @@ mod tests {
     async fn create_test_state() -> ApiState {
         let config = Config::default();
         let config_manager = Arc::new(ConfigManager::new(config));
-        
+
         // Mock components for testing
         let health_monitor = Arc::new(SystemHealthMonitor::default());
         let security_manager = Arc::new(SecurityManager::new(Default::default()));
@@ -546,9 +580,7 @@ mod tests {
     async fn test_create_api_router() {
         let state = create_test_state().await;
         let _router = create_api_router(state);
-        
+
         // Just ensure the router can be created without panicking
-        assert!(true);
     }
 }
-

@@ -66,9 +66,10 @@ use crate::log_info;
 /// Subscription tier for rate limiting and resource allocation. Tier
 /// *naming* only -- what each tier actually allows is resolved via
 /// [`TierLimits`], not hardcoded here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum SubscriptionTier {
     /// Free tier: Limited symbols, single exchange, trades only
+    #[default]
     Free,
     /// Starter tier: More symbols, multiple exchanges
     Starter,
@@ -76,12 +77,6 @@ pub enum SubscriptionTier {
     Professional,
     /// Enterprise tier: Unlimited + priority routing
     Enterprise,
-}
-
-impl Default for SubscriptionTier {
-    fn default() -> Self {
-        SubscriptionTier::Free
-    }
 }
 
 impl std::fmt::Display for SubscriptionTier {
@@ -192,7 +187,8 @@ impl TenantMetrics {
 
         let current_peak_exchanges = self.peak_exchanges.load(Ordering::Relaxed);
         if exchanges as u64 > current_peak_exchanges {
-            self.peak_exchanges.store(exchanges as u64, Ordering::Relaxed);
+            self.peak_exchanges
+                .store(exchanges as u64, Ordering::Relaxed);
         }
     }
 
@@ -286,7 +282,7 @@ impl TenantSubscriptionState {
     /// Check if tenant has this symbol
     pub async fn has_symbol(&self, exchange: &str, symbol: &str) -> bool {
         let map = self.symbols_by_exchange.read().await;
-        map.get(exchange).map_or(false, |s| s.contains(symbol))
+        map.get(exchange).is_some_and(|s| s.contains(symbol))
     }
 }
 
@@ -456,8 +452,12 @@ impl TenantSubscriptionLimiter {
 
         // Check exchange limit
         let current_exchanges = tenant.exchange_count().await;
-        let has_exchange = tenant.symbols_by_exchange.read().await.contains_key(exchange);
-        
+        let has_exchange = tenant
+            .symbols_by_exchange
+            .read()
+            .await
+            .contains_key(exchange);
+
         if !has_exchange && current_exchanges >= self.tier_limits.max_exchanges(tier) {
             tenant.metrics.record_subscription_request(true);
             return SubscriptionValidation::rejected(format!(
@@ -527,24 +527,14 @@ impl TenantSubscriptionLimiter {
     }
 
     /// Record that symbols were successfully subscribed
-    pub async fn record_subscription(
-        &self,
-        tenant_id: Uuid,
-        exchange: &str,
-        symbols: &[String],
-    ) {
+    pub async fn record_subscription(&self, tenant_id: Uuid, exchange: &str, symbols: &[String]) {
         if let Some(tenant) = self.tenants.get(&tenant_id) {
             tenant.add_symbols(exchange, symbols).await;
         }
     }
 
     /// Record that symbols were unsubscribed
-    pub async fn record_unsubscription(
-        &self,
-        tenant_id: Uuid,
-        exchange: &str,
-        symbols: &[String],
-    ) {
+    pub async fn record_unsubscription(&self, tenant_id: Uuid, exchange: &str, symbols: &[String]) {
         if let Some(tenant) = self.tenants.get(&tenant_id) {
             tenant.remove_symbols(exchange, symbols).await;
         }
@@ -605,7 +595,10 @@ impl TenantSubscriptionLimiter {
             let tenant = entry.value();
             total_messages += tenant.metrics.messages_received.load(Ordering::Relaxed);
             total_bytes += tenant.metrics.bytes_received.load(Ordering::Relaxed);
-            total_rejections += tenant.metrics.subscription_rejections.load(Ordering::Relaxed);
+            total_rejections += tenant
+                .metrics
+                .subscription_rejections
+                .load(Ordering::Relaxed);
             *tenants_by_tier.entry(tenant.tier).or_insert(0) += 1;
         }
 
@@ -736,7 +729,10 @@ mod tests {
         let limits = TestTierLimits;
         assert_eq!(limits.max_symbols(SubscriptionTier::Free), 5);
         assert_eq!(limits.max_exchanges(SubscriptionTier::Free), 1);
-        assert_eq!(limits.allowed_data_types(SubscriptionTier::Free), vec!["trades"]);
+        assert_eq!(
+            limits.allowed_data_types(SubscriptionTier::Free),
+            vec!["trades"]
+        );
 
         assert_eq!(limits.max_symbols(SubscriptionTier::Enterprise), usize::MAX);
         assert!(limits.has_priority_routing(SubscriptionTier::Enterprise));
@@ -776,7 +772,7 @@ mod tests {
 
         // Request 10 symbols (free tier allows 5)
         let symbols: Vec<String> = (0..10).map(|i| format!("SYM{}/USD", i)).collect();
-        
+
         let validation = limiter
             .validate_subscription(tenant_id, "kraken", &symbols, &["trades".to_string()], 0)
             .await;
@@ -812,7 +808,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_data_topic() {
         let limiter = test_limiter();
-        
+
         let free_tenant = Uuid::new_v4();
         let enterprise_tenant = Uuid::new_v4();
 

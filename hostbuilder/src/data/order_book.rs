@@ -1,28 +1,28 @@
 //! Ultra-fast lock-free order book for sub-microsecond trading
-//! 
+//!
 //! Implements a high-performance, lock-free order book using advanced concurrent
 //! data structures and RCU-style updates for minimal latency operations.
 
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
-use std::ptr;
-use std::alloc::{Layout, alloc};
-use crossbeam_utils::CachePadded;
-use anyhow::{Result, anyhow};
 use crate::infrastructure::logging_facade::ORDERBOOK_LOGGER;
-use crate::{log_info, log_error, log_debug};
+use crate::{log_debug, log_error, log_info};
+use anyhow::{anyhow, Result};
+use crossbeam_utils::CachePadded;
+use std::alloc::{alloc, Layout};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 /// Cache-aligned price level for lock-free operations
 #[repr(align(64))] // Cache line alignment
 #[derive(Debug)]
 struct PriceLevel {
-    price: i64,                    // Price in fixed-point format (scaled by 10000)
-    total_quantity: AtomicU64,     // Total quantity at this price level
-    order_count: AtomicUsize,      // Number of orders at this level
-    first_order: AtomicPtr<Order>, // Head of order linked list
-    last_order: AtomicPtr<Order>,  // Tail of order linked list
+    price: i64,                        // Price in fixed-point format (scaled by 10000)
+    total_quantity: AtomicU64,         // Total quantity at this price level
+    order_count: AtomicUsize,          // Number of orders at this level
+    first_order: AtomicPtr<Order>,     // Head of order linked list
+    last_order: AtomicPtr<Order>,      // Tail of order linked list
     next_level: AtomicPtr<PriceLevel>, // Next price level (for linked list)
-    level_id: u64,                 // Unique level identifier
-    timestamp: AtomicU64,          // Last update timestamp
+    level_id: u64,                     // Unique level identifier
+    timestamp: AtomicU64,              // Last update timestamp
 }
 
 /// Individual order in the book
@@ -50,27 +50,27 @@ pub struct LockFreeOrderBook {
     // Best bid/ask pointers for ultra-fast L1 access
     best_bid: CachePadded<AtomicPtr<PriceLevel>>,
     best_ask: CachePadded<AtomicPtr<PriceLevel>>,
-    
+
     // Price level trees (separate for bids/asks)
     bid_levels: CachePadded<AtomicPtr<PriceLevel>>,
     ask_levels: CachePadded<AtomicPtr<PriceLevel>>,
-    
+
     // Book statistics
     total_bid_quantity: CachePadded<AtomicU64>,
     total_ask_quantity: CachePadded<AtomicU64>,
     total_orders: CachePadded<AtomicUsize>,
     _last_trade_price: CachePadded<AtomicU64>,
-    
+
     // Update sequence counter for lock-free reads
     sequence: CachePadded<AtomicU64>,
-    
+
     // Symbol identifier
     _symbol: String,
-    
+
     // Memory management
     level_allocator: LevelAllocator,
     order_allocator: OrderAllocator,
-    
+
     // Performance counters
     operations_count: AtomicU64,
     l1_updates: AtomicU64,
@@ -102,13 +102,19 @@ impl LockFreeOrderBook {
             level_changes: AtomicU64::new(0),
         })
     }
-    
+
     /// Add order to the book (lock-free)
-    pub fn add_order(&self, order_id: u64, price: f64, quantity: f64, side: OrderSide) -> Result<()> {
+    pub fn add_order(
+        &self,
+        order_id: u64,
+        price: f64,
+        quantity: f64,
+        side: OrderSide,
+    ) -> Result<()> {
         let start_seq = self.sequence.fetch_add(1, Ordering::AcqRel);
         let price_fixed = (price * 10000.0) as i64;
         let quantity_fixed = (quantity * 10000.0) as u64;
-        
+
         // Allocate new order
         let order = self.order_allocator.allocate()?;
         unsafe {
@@ -117,52 +123,62 @@ impl LockFreeOrderBook {
             (*order).quantity.store(quantity_fixed, Ordering::Relaxed);
             (*order).side = side;
             (*order).timestamp = hardware_timestamp();
-            (*order).next_order.store(ptr::null_mut(), Ordering::Relaxed);
-            (*order).prev_order.store(ptr::null_mut(), Ordering::Relaxed);
+            (*order)
+                .next_order
+                .store(ptr::null_mut(), Ordering::Relaxed);
+            (*order)
+                .prev_order
+                .store(ptr::null_mut(), Ordering::Relaxed);
         }
-        
+
         match side {
             OrderSide::Buy => self.add_bid_order(order, price_fixed, quantity_fixed)?,
             OrderSide::Sell => self.add_ask_order(order, price_fixed, quantity_fixed)?,
         }
-        
+
         self.operations_count.fetch_add(1, Ordering::Relaxed);
-        
+
         // Complete sequence update
-        self.sequence.compare_exchange_weak(
-            start_seq + 1,
-            start_seq + 2,
-            Ordering::AcqRel,
-            Ordering::Relaxed
-        ).ok();
-        
+        self.sequence
+            .compare_exchange_weak(
+                start_seq + 1,
+                start_seq + 2,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .ok();
+
         Ok(())
     }
-    
+
     /// Add bid order (lock-free insertion)
     fn add_bid_order(&self, order: *mut Order, price: i64, quantity: u64) -> Result<()> {
         loop {
             let current_best = self.best_bid.load(Ordering::Acquire);
 
             if current_best.is_null() {
-                log_debug!(ORDERBOOK_LOGGER, "First bid level being created at price {}", price as f64 / 10000.0);
+                log_debug!(
+                    ORDERBOOK_LOGGER,
+                    "First bid level being created at price {}",
+                    price as f64 / 10000.0
+                );
             }
 
             // Find or create price level
             let level = self.find_or_create_bid_level(price)?;
-            
+
             // Add order to price level
             unsafe {
                 self.add_order_to_level(level, order)?;
             }
-            
+
             // Update best bid if necessary
             if current_best.is_null() || unsafe { (*current_best).price < price } {
                 match self.best_bid.compare_exchange_weak(
                     current_best,
                     level,
                     Ordering::AcqRel,
-                    Ordering::Relaxed
+                    Ordering::Relaxed,
                 ) {
                     Ok(_) => {
                         self.l1_updates.fetch_add(1, Ordering::Relaxed);
@@ -174,36 +190,41 @@ impl LockFreeOrderBook {
                 break;
             }
         }
-        
-        self.total_bid_quantity.fetch_add(quantity, Ordering::AcqRel);
+
+        self.total_bid_quantity
+            .fetch_add(quantity, Ordering::AcqRel);
         self.total_orders.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
-    
+
     /// Add ask order (lock-free insertion)
     fn add_ask_order(&self, order: *mut Order, price: i64, quantity: u64) -> Result<()> {
         loop {
             let current_best = self.best_ask.load(Ordering::Acquire);
 
             if current_best.is_null() {
-                log_debug!(ORDERBOOK_LOGGER, "First ask level being created at price {}", price as f64 / 10000.0);
+                log_debug!(
+                    ORDERBOOK_LOGGER,
+                    "First ask level being created at price {}",
+                    price as f64 / 10000.0
+                );
             }
 
             // Find or create price level
             let level = self.find_or_create_ask_level(price)?;
-            
+
             // Add order to price level
             unsafe {
                 self.add_order_to_level(level, order)?;
             }
-            
+
             // Update best ask if necessary
             if current_best.is_null() || unsafe { (*current_best).price > price } {
                 match self.best_ask.compare_exchange_weak(
                     current_best,
                     level,
                     Ordering::AcqRel,
-                    Ordering::Relaxed
+                    Ordering::Relaxed,
                 ) {
                     Ok(_) => {
                         self.l1_updates.fetch_add(1, Ordering::Relaxed);
@@ -215,91 +236,104 @@ impl LockFreeOrderBook {
                 break;
             }
         }
-        
-        self.total_ask_quantity.fetch_add(quantity, Ordering::AcqRel);
+
+        self.total_ask_quantity
+            .fetch_add(quantity, Ordering::AcqRel);
         self.total_orders.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
-    
+
     /// Find or create bid level (lock-free)
     fn find_or_create_bid_level(&self, price: i64) -> Result<*mut PriceLevel> {
         loop {
             let head = self.bid_levels.load(Ordering::Acquire);
-            
+
             // Search for existing level
             if let Some(existing) = unsafe { self.find_price_level(head, price) } {
                 return Ok(existing);
             }
-            
+
             // Create new level
             let new_level = self.level_allocator.allocate()?;
             unsafe {
                 (*new_level).price = price;
                 (*new_level).total_quantity.store(0, Ordering::Relaxed);
                 (*new_level).order_count.store(0, Ordering::Relaxed);
-                (*new_level).first_order.store(ptr::null_mut(), Ordering::Relaxed);
-                (*new_level).last_order.store(ptr::null_mut(), Ordering::Relaxed);
+                (*new_level)
+                    .first_order
+                    .store(ptr::null_mut(), Ordering::Relaxed);
+                (*new_level)
+                    .last_order
+                    .store(ptr::null_mut(), Ordering::Relaxed);
                 (*new_level).level_id = hardware_timestamp();
-                (*new_level).timestamp.store(hardware_timestamp(), Ordering::Relaxed);
+                (*new_level)
+                    .timestamp
+                    .store(hardware_timestamp(), Ordering::Relaxed);
             }
-            
+
             // Insert into sorted list (highest price first for bids)
-            if let Ok(_) = self.insert_bid_level_sorted(new_level, price) {
+            if self.insert_bid_level_sorted(new_level, price).is_ok() {
                 return Ok(new_level);
             }
-            
+
             // If insertion failed, deallocate and retry
             self.level_allocator.deallocate(new_level);
         }
     }
-    
+
     /// Find or create ask level (lock-free)
     fn find_or_create_ask_level(&self, price: i64) -> Result<*mut PriceLevel> {
         loop {
             let head = self.ask_levels.load(Ordering::Acquire);
-            
+
             // Search for existing level
             if let Some(existing) = unsafe { self.find_price_level(head, price) } {
                 return Ok(existing);
             }
-            
+
             // Create new level
             let new_level = self.level_allocator.allocate()?;
             unsafe {
                 (*new_level).price = price;
                 (*new_level).total_quantity.store(0, Ordering::Relaxed);
                 (*new_level).order_count.store(0, Ordering::Relaxed);
-                (*new_level).first_order.store(ptr::null_mut(), Ordering::Relaxed);
-                (*new_level).last_order.store(ptr::null_mut(), Ordering::Relaxed);
+                (*new_level)
+                    .first_order
+                    .store(ptr::null_mut(), Ordering::Relaxed);
+                (*new_level)
+                    .last_order
+                    .store(ptr::null_mut(), Ordering::Relaxed);
                 (*new_level).level_id = hardware_timestamp();
-                (*new_level).timestamp.store(hardware_timestamp(), Ordering::Relaxed);
+                (*new_level)
+                    .timestamp
+                    .store(hardware_timestamp(), Ordering::Relaxed);
             }
-            
+
             // Insert into sorted list (lowest price first for asks)
-            if let Ok(_) = self.insert_ask_level_sorted(new_level, price) {
+            if self.insert_ask_level_sorted(new_level, price).is_ok() {
                 return Ok(new_level);
             }
-            
+
             self.level_allocator.deallocate(new_level);
         }
     }
-    
+
     /// Insert bid level in sorted order (highest first)
     fn insert_bid_level_sorted(&self, new_level: *mut PriceLevel, price: i64) -> Result<()> {
         loop {
             let head = self.bid_levels.load(Ordering::Acquire);
-            
+
             if head.is_null() || unsafe { (*head).price < price } {
                 // Insert at head
                 unsafe {
                     (*new_level).next_level.store(head, Ordering::Relaxed);
                 }
-                
+
                 match self.bid_levels.compare_exchange_weak(
                     head,
                     new_level,
                     Ordering::AcqRel,
-                    Ordering::Relaxed
+                    Ordering::Relaxed,
                 ) {
                     Ok(_) => return Ok(()),
                     Err(_) => continue,
@@ -314,13 +348,15 @@ impl LockFreeOrderBook {
                         unsafe {
                             (*new_level).next_level.store(next, Ordering::Relaxed);
                         }
-                        
-                        match unsafe { (*current).next_level.compare_exchange_weak(
-                            next,
-                            new_level,
-                            Ordering::AcqRel,
-                            Ordering::Relaxed
-                        ) } {
+
+                        match unsafe {
+                            (*current).next_level.compare_exchange_weak(
+                                next,
+                                new_level,
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                        } {
                             Ok(_) => return Ok(()),
                             Err(_) => break, // Retry from beginning
                         }
@@ -330,23 +366,23 @@ impl LockFreeOrderBook {
             }
         }
     }
-    
+
     /// Insert ask level in sorted order (lowest first)
     fn insert_ask_level_sorted(&self, new_level: *mut PriceLevel, price: i64) -> Result<()> {
         loop {
             let head = self.ask_levels.load(Ordering::Acquire);
-            
+
             if head.is_null() || unsafe { (*head).price > price } {
                 // Insert at head
                 unsafe {
                     (*new_level).next_level.store(head, Ordering::Relaxed);
                 }
-                
+
                 match self.ask_levels.compare_exchange_weak(
                     head,
                     new_level,
                     Ordering::AcqRel,
-                    Ordering::Relaxed
+                    Ordering::Relaxed,
                 ) {
                     Ok(_) => return Ok(()),
                     Err(_) => continue,
@@ -361,13 +397,15 @@ impl LockFreeOrderBook {
                         unsafe {
                             (*new_level).next_level.store(next, Ordering::Relaxed);
                         }
-                        
-                        match unsafe { (*current).next_level.compare_exchange_weak(
-                            next,
-                            new_level,
-                            Ordering::AcqRel,
-                            Ordering::Relaxed
-                        ) } {
+
+                        match unsafe {
+                            (*current).next_level.compare_exchange_weak(
+                                next,
+                                new_level,
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                        } {
                             Ok(_) => return Ok(()),
                             Err(_) => break,
                         }
@@ -377,9 +415,13 @@ impl LockFreeOrderBook {
             }
         }
     }
-    
+
     /// Find existing price level
-    unsafe fn find_price_level(&self, head: *mut PriceLevel, price: i64) -> Option<*mut PriceLevel> {
+    unsafe fn find_price_level(
+        &self,
+        head: *mut PriceLevel,
+        price: i64,
+    ) -> Option<*mut PriceLevel> {
         let mut current = head;
         while !current.is_null() {
             if (*current).price == price {
@@ -389,62 +431,75 @@ impl LockFreeOrderBook {
         }
         None
     }
-    
+
     /// Add order to price level (lock-free)
     unsafe fn add_order_to_level(&self, level: *mut PriceLevel, order: *mut Order) -> Result<()> {
         let quantity = (*order).quantity.load(Ordering::Relaxed);
-        
+
         // Update level totals
-        (*level).total_quantity.fetch_add(quantity, Ordering::AcqRel);
+        (*level)
+            .total_quantity
+            .fetch_add(quantity, Ordering::AcqRel);
         (*level).order_count.fetch_add(1, Ordering::AcqRel);
-        (*level).timestamp.store(hardware_timestamp(), Ordering::Relaxed);
-        
+        (*level)
+            .timestamp
+            .store(hardware_timestamp(), Ordering::Relaxed);
+
         // Insert order at end of level's order list
         loop {
             let last_order = (*level).last_order.load(Ordering::Acquire);
-            
+
             if last_order.is_null() {
                 // First order in level
-                (*order).prev_order.store(ptr::null_mut(), Ordering::Relaxed);
-                (*order).next_order.store(ptr::null_mut(), Ordering::Relaxed);
-                
+                (*order)
+                    .prev_order
+                    .store(ptr::null_mut(), Ordering::Relaxed);
+                (*order)
+                    .next_order
+                    .store(ptr::null_mut(), Ordering::Relaxed);
+
                 // Try to set as both first and last
-                if (*level).first_order.compare_exchange_weak(
-                    ptr::null_mut(),
-                    order,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed
-                ).is_ok() {
+                if (*level)
+                    .first_order
+                    .compare_exchange_weak(
+                        ptr::null_mut(),
+                        order,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
                     (*level).last_order.store(order, Ordering::Release);
                     break;
                 }
             } else {
                 // Add to end
                 (*order).prev_order.store(last_order, Ordering::Relaxed);
-                (*order).next_order.store(ptr::null_mut(), Ordering::Relaxed);
-                
-                if (*level).last_order.compare_exchange_weak(
-                    last_order,
-                    order,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed
-                ).is_ok() {
+                (*order)
+                    .next_order
+                    .store(ptr::null_mut(), Ordering::Relaxed);
+
+                if (*level)
+                    .last_order
+                    .compare_exchange_weak(last_order, order, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
                     (*last_order).next_order.store(order, Ordering::Release);
                     break;
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Get best bid/ask (ultra-fast L1 access)
     pub fn get_best_bid(&self) -> Option<BookLevel> {
         let level_ptr = self.best_bid.load(Ordering::Acquire);
         if level_ptr.is_null() {
             return None;
         }
-        
+
         unsafe {
             Some(BookLevel {
                 price: (*level_ptr).price as f64 / 10000.0,
@@ -454,13 +509,13 @@ impl LockFreeOrderBook {
             })
         }
     }
-    
+
     pub fn get_best_ask(&self) -> Option<BookLevel> {
         let level_ptr = self.best_ask.load(Ordering::Acquire);
         if level_ptr.is_null() {
             return None;
         }
-        
+
         unsafe {
             Some(BookLevel {
                 price: (*level_ptr).price as f64 / 10000.0,
@@ -470,14 +525,14 @@ impl LockFreeOrderBook {
             })
         }
     }
-    
+
     /// Get spread (bid-ask difference)
     pub fn get_spread(&self) -> Option<f64> {
         let bid = self.get_best_bid()?;
         let ask = self.get_best_ask()?;
         Some(ask.price - bid.price)
     }
-    
+
     /// Get book statistics
     pub fn get_stats(&self) -> OrderBookStats {
         OrderBookStats {
@@ -530,39 +585,45 @@ impl LevelAllocator {
             unsafe {
                 let level = alloc(layout) as *mut PriceLevel;
                 if level.is_null() {
-                    log_error!(ORDERBOOK_LOGGER, "Failed to allocate memory for price level (layout size={})", layout.size());
+                    log_error!(
+                        ORDERBOOK_LOGGER,
+                        "Failed to allocate memory for price level (layout size={})",
+                        layout.size()
+                    );
                     return Err(anyhow!("Failed to allocate memory for price level"));
                 }
                 (*level).next_level.store(free_list, Ordering::Relaxed);
                 free_list = level;
             }
         }
-        
+
         Ok(Self {
             free_list: AtomicPtr::new(free_list),
             _capacity: capacity,
             allocated: AtomicUsize::new(0),
         })
     }
-    
+
     fn allocate(&self) -> Result<*mut PriceLevel> {
         loop {
             let head = self.free_list.load(Ordering::Acquire);
             if head.is_null() {
-                log_error!(ORDERBOOK_LOGGER, "Price level allocator exhausted - all pre-allocated levels in use");
+                log_error!(
+                    ORDERBOOK_LOGGER,
+                    "Price level allocator exhausted - all pre-allocated levels in use"
+                );
                 return Err(anyhow!("Price level allocator exhausted"));
             }
-            
+
             unsafe {
                 let next = (*head).next_level.load(Ordering::Relaxed);
-                if self.free_list.compare_exchange_weak(
-                    head,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed
-                ).is_ok() {
+                if self
+                    .free_list
+                    .compare_exchange_weak(head, next, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
                     self.allocated.fetch_add(1, Ordering::Relaxed);
-                    
+
                     // Initialize level
                     ptr::write_bytes(head, 0, 1);
                     (*head).total_quantity = AtomicU64::new(0);
@@ -571,26 +632,25 @@ impl LevelAllocator {
                     (*head).last_order = AtomicPtr::new(ptr::null_mut());
                     (*head).next_level = AtomicPtr::new(ptr::null_mut());
                     (*head).timestamp = AtomicU64::new(0);
-                    
+
                     return Ok(head);
                 }
             }
         }
     }
-    
+
     fn deallocate(&self, level: *mut PriceLevel) {
         loop {
             let head = self.free_list.load(Ordering::Acquire);
             unsafe {
                 (*level).next_level.store(head, Ordering::Relaxed);
             }
-            
-            if self.free_list.compare_exchange_weak(
-                head,
-                level,
-                Ordering::AcqRel,
-                Ordering::Relaxed
-            ).is_ok() {
+
+            if self
+                .free_list
+                .compare_exchange_weak(head, level, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
                 self.allocated.fetch_sub(1, Ordering::Relaxed);
                 break;
             }
@@ -615,52 +675,58 @@ impl OrderAllocator {
             unsafe {
                 let order = alloc(layout) as *mut Order;
                 if order.is_null() {
-                    log_error!(ORDERBOOK_LOGGER, "Failed to allocate memory for order (layout size={})", layout.size());
+                    log_error!(
+                        ORDERBOOK_LOGGER,
+                        "Failed to allocate memory for order (layout size={})",
+                        layout.size()
+                    );
                     return Err(anyhow!("Failed to allocate memory for order"));
                 }
                 (*order).next_order.store(free_list, Ordering::Relaxed);
                 free_list = order;
             }
         }
-        
+
         Ok(Self {
             free_list: AtomicPtr::new(free_list),
             _capacity: capacity,
             allocated: AtomicUsize::new(0),
         })
     }
-    
+
     fn allocate(&self) -> Result<*mut Order> {
         loop {
             let head = self.free_list.load(Ordering::Acquire);
             if head.is_null() {
-                log_error!(ORDERBOOK_LOGGER, "Order allocator exhausted - all pre-allocated orders in use");
+                log_error!(
+                    ORDERBOOK_LOGGER,
+                    "Order allocator exhausted - all pre-allocated orders in use"
+                );
                 return Err(anyhow!("Order allocator exhausted"));
             }
-            
+
             unsafe {
                 let next = (*head).next_order.load(Ordering::Relaxed);
-                if self.free_list.compare_exchange_weak(
-                    head,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed
-                ).is_ok() {
+                if self
+                    .free_list
+                    .compare_exchange_weak(head, next, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
                     self.allocated.fetch_add(1, Ordering::Relaxed);
-                    
+
                     // Initialize order
                     ptr::write_bytes(head, 0, 1);
                     (*head).quantity = AtomicU64::new(0);
                     (*head).next_order = AtomicPtr::new(ptr::null_mut());
                     (*head).prev_order = AtomicPtr::new(ptr::null_mut());
                     (*head).is_deleted = AtomicPtr::new(ptr::null_mut());
-                    
+
                     return Ok(head);
                 }
             }
         }
     }
-    
+
     #[allow(dead_code)]
     fn deallocate(&self, order: *mut Order) {
         loop {
@@ -668,13 +734,12 @@ impl OrderAllocator {
             unsafe {
                 (*order).next_order.store(head, Ordering::Relaxed);
             }
-            
-            if self.free_list.compare_exchange_weak(
-                head,
-                order,
-                Ordering::AcqRel,
-                Ordering::Relaxed
-            ).is_ok() {
+
+            if self
+                .free_list
+                .compare_exchange_weak(head, order, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
                 self.allocated.fetch_sub(1, Ordering::Relaxed);
                 break;
             }
@@ -698,30 +763,30 @@ fn hardware_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_order_book_creation() {
         let book = LockFreeOrderBook::new("BTCUSD".to_string()).unwrap();
         assert!(book.get_best_bid().is_none());
         assert!(book.get_best_ask().is_none());
     }
-    
+
     #[test]
     fn test_add_orders() {
         let book = LockFreeOrderBook::new("BTCUSD".to_string()).unwrap();
-        
+
         // Add bid
         book.add_order(1, 50000.0, 1.0, OrderSide::Buy).unwrap();
         let best_bid = book.get_best_bid().unwrap();
         assert_eq!(best_bid.price, 50000.0);
         assert_eq!(best_bid.quantity, 1.0);
-        
+
         // Add ask
         book.add_order(2, 50100.0, 0.5, OrderSide::Sell).unwrap();
         let best_ask = book.get_best_ask().unwrap();
         assert_eq!(best_ask.price, 50100.0);
         assert_eq!(best_ask.quantity, 0.5);
-        
+
         // Check spread
         let spread = book.get_spread().unwrap();
         assert_eq!(spread, 100.0);

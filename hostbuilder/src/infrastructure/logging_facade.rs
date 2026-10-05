@@ -1,7 +1,7 @@
-use ultra_logger::{UltraLogger, LogLevel, LoggerConfig, TransportConfig, ConnectionConfig};
-use std::sync::Arc;
-use std::collections::HashMap;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::Arc;
+use ultra_logger::{ConnectionConfig, LogLevel, LoggerConfig, TransportConfig, UltraLogger};
 
 /// Global logging facade for the DataEngine
 /// Provides unified access to UltraLogger across all components
@@ -31,10 +31,10 @@ impl DataEngineLogger {
         if use_elasticsearch {
             // Get credentials from environment variables (required in production)
             let endpoint = std::env::var("ELASTIC_CLOUD_ENDPOINT").unwrap_or_default();
-            let username = std::env::var("ELASTIC_CLOUD_USERNAME")
-                .unwrap_or_else(|_| "elastic".to_string());
+            let username =
+                std::env::var("ELASTIC_CLOUD_USERNAME").unwrap_or_else(|_| "elastic".to_string());
             let password = std::env::var("ELASTIC_CLOUD_PASSWORD").unwrap_or_default();
-            
+
             // Only configure elasticsearch if endpoint is set
             if endpoint.is_empty() {
                 return LoggerConfig::default();
@@ -63,31 +63,55 @@ impl DataEngineLogger {
     }
 
     /// Log debug information
-    pub async fn debug(&self, message: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.logger.debug(message.to_string()).await
+    pub async fn debug(
+        &self,
+        message: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.logger
+            .debug(message.to_string())
+            .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 
     /// Log informational messages
-    pub async fn info(&self, message: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.logger.info(message.to_string()).await
+    pub async fn info(
+        &self,
+        message: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.logger
+            .info(message.to_string())
+            .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 
     /// Log warning messages
-    pub async fn warn(&self, message: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.logger.warn(message.to_string()).await
+    pub async fn warn(
+        &self,
+        message: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.logger
+            .warn(message.to_string())
+            .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 
     /// Log error messages
-    pub async fn error(&self, message: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.logger.error(message.to_string()).await
+    pub async fn error(
+        &self,
+        message: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.logger
+            .error(message.to_string())
+            .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 
     /// Log with custom level
-    pub async fn log(&self, level: LogLevel, message: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn log(
+        &self,
+        level: LogLevel,
+        message: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match level {
             LogLevel::Debug => self.logger.debug(message.to_string()).await,
             LogLevel::Info => self.logger.info(message.to_string()).await,
@@ -102,9 +126,12 @@ impl DataEngineLogger {
         &self,
         operation: &str,
         duration_nanos: u64,
-        success: bool
+        success: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let message = format!("Performance: {} took {}ns, success: {}", operation, duration_nanos, success);
+        let message = format!(
+            "Performance: {} took {}ns, success: {}",
+            operation, duration_nanos, success
+        );
         self.info(&message).await
     }
 
@@ -114,18 +141,21 @@ impl DataEngineLogger {
         operation: &str,
         key: &str,
         success: bool,
-        error_message: Option<String>
+        error_message: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let message = if success {
             format!("Redis {}: {}", operation, key)
         } else {
-            format!("Redis {} failed: {} - error: {:?}", operation, key, error_message)
+            format!(
+                "Redis {} failed: {} - error: {:?}",
+                operation, key, error_message
+            )
         };
-        
-        if success { 
-            self.debug(&message).await 
-        } else { 
-            self.error(&message).await 
+
+        if success {
+            self.debug(&message).await
+        } else {
+            self.error(&message).await
         }
     }
 
@@ -136,18 +166,24 @@ impl DataEngineLogger {
         table: &str,
         affected_rows: Option<usize>,
         success: bool,
-        error_message: Option<String>
+        error_message: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let message = if success {
-            format!("Database {}: {} (rows: {:?})", operation, table, affected_rows)
+            format!(
+                "Database {}: {} (rows: {:?})",
+                operation, table, affected_rows
+            )
         } else {
-            format!("Database {} failed: {} - error: {:?}", operation, table, error_message)
+            format!(
+                "Database {} failed: {} - error: {:?}",
+                operation, table, error_message
+            )
         };
-        
-        if success { 
-            self.debug(&message).await 
-        } else { 
-            self.error(&message).await 
+
+        if success {
+            self.debug(&message).await
+        } else {
+            self.error(&message).await
         }
     }
 
@@ -166,35 +202,28 @@ impl DataEngineLogger {
 }
 
 /// Global logger instances for different DataEngine components
-pub static MAIN_LOGGER: Lazy<Arc<DataEngineLogger>> = Lazy::new(|| {
-    Arc::new(DataEngineLogger::new("Main"))
-});
+pub static MAIN_LOGGER: Lazy<Arc<DataEngineLogger>> =
+    Lazy::new(|| Arc::new(DataEngineLogger::new("Main")));
 
-pub static KRAKEN_LOGGER: Lazy<Arc<DataEngineLogger>> = Lazy::new(|| {
-    Arc::new(DataEngineLogger::new("Kraken"))
-});
+pub static KRAKEN_LOGGER: Lazy<Arc<DataEngineLogger>> =
+    Lazy::new(|| Arc::new(DataEngineLogger::new("Kraken")));
 
-pub static ORDERBOOK_LOGGER: Lazy<Arc<DataEngineLogger>> = Lazy::new(|| {
-    Arc::new(DataEngineLogger::new("OrderBook"))
-});
+pub static ORDERBOOK_LOGGER: Lazy<Arc<DataEngineLogger>> =
+    Lazy::new(|| Arc::new(DataEngineLogger::new("OrderBook")));
 
-pub static PERFORMANCE_LOGGER: Lazy<Arc<DataEngineLogger>> = Lazy::new(|| {
-    Arc::new(DataEngineLogger::new("Performance"))
-});
+pub static PERFORMANCE_LOGGER: Lazy<Arc<DataEngineLogger>> =
+    Lazy::new(|| Arc::new(DataEngineLogger::new("Performance")));
 
-pub static DATA_PIPELINE_LOGGER: Lazy<Arc<DataEngineLogger>> = Lazy::new(|| {
-    Arc::new(DataEngineLogger::new("DataPipeline"))
-});
+pub static DATA_PIPELINE_LOGGER: Lazy<Arc<DataEngineLogger>> =
+    Lazy::new(|| Arc::new(DataEngineLogger::new("DataPipeline")));
 
 /// Massive (Polygon.io) WebSocket logger
-pub static MASSIVE_LOGGER: Lazy<Arc<DataEngineLogger>> = Lazy::new(|| {
-    Arc::new(DataEngineLogger::new("Massive"))
-});
+pub static MASSIVE_LOGGER: Lazy<Arc<DataEngineLogger>> =
+    Lazy::new(|| Arc::new(DataEngineLogger::new("Massive")));
 
 /// Oanda pricing stream logger
-pub static OANDA_LOGGER: Lazy<Arc<DataEngineLogger>> = Lazy::new(|| {
-    Arc::new(DataEngineLogger::new("Oanda"))
-});
+pub static OANDA_LOGGER: Lazy<Arc<DataEngineLogger>> =
+    Lazy::new(|| Arc::new(DataEngineLogger::new("Oanda")));
 
 /// Convenience macros for logging throughout the DataEngine
 #[macro_export]
