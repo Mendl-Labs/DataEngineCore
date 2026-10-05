@@ -34,7 +34,7 @@ use std::{
 };
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::{signal, sync::broadcast::channel, sync::mpsc};
+use tokio::{sync::broadcast::channel, sync::mpsc};
 
 #[cfg(feature = "database")]
 use crate::data::get_info::get_exchange;
