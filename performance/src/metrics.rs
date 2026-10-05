@@ -1,44 +1,50 @@
 //! Ultra-high performance metrics collection for DataEngine
-//! 
+//!
 //! Provides sub-microsecond precision timing and zero-allocation metrics
 //! collection for trading system performance monitoring.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use std::collections::VecDeque;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// High-performance metrics collector for trading operations
 pub struct PerformanceMetrics {
     // Message processing metrics
     messages_processed: AtomicU64,
     messages_per_second: AtomicU64,
-    
+
     // Latency tracking (nanoseconds)
     min_latency_ns: AtomicU64,
     max_latency_ns: AtomicU64,
     avg_latency_ns: AtomicU64,
     total_latency_ns: AtomicU64,
-    
+
     // Memory and resource usage
     memory_usage: AtomicUsize,
     cpu_usage_percent: AtomicU64,
-    
+
     // Connection and error metrics
     active_connections: AtomicU64,
     failed_connections: AtomicU64,
     total_errors: AtomicU64,
-    
+
     // Throughput tracking
     bytes_received: AtomicU64,
     bytes_sent: AtomicU64,
-    
+
     // Latency histogram for percentile calculations
     latency_histogram: RwLock<LatencyHistogram>,
-    
+
     // Start time for uptime calculation
     start_time: Instant,
+}
+
+impl Default for PerformanceMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PerformanceMetrics {
@@ -67,16 +73,18 @@ impl PerformanceMetrics {
     pub fn record_message_latency(&self, latency_ns: u64) {
         // Update counters atomically
         let messages = self.messages_processed.fetch_add(1, Ordering::Relaxed);
-        let total_latency = self.total_latency_ns.fetch_add(latency_ns, Ordering::Relaxed);
-        
+        let total_latency = self
+            .total_latency_ns
+            .fetch_add(latency_ns, Ordering::Relaxed);
+
         // Update average (approximate for performance)
         let new_avg = (total_latency + latency_ns) / (messages + 1);
         self.avg_latency_ns.store(new_avg, Ordering::Relaxed);
-        
+
         // Update min/max
         self.update_min_latency(latency_ns);
         self.update_max_latency(latency_ns);
-        
+
         // Update histogram for percentile calculation
         if let Some(mut histogram) = self.latency_histogram.try_write() {
             histogram.record(latency_ns);
@@ -88,7 +96,10 @@ impl PerformanceMetrics {
         let mut current = self.min_latency_ns.load(Ordering::Relaxed);
         while latency_ns < current {
             match self.min_latency_ns.compare_exchange_weak(
-                current, latency_ns, Ordering::Relaxed, Ordering::Relaxed
+                current,
+                latency_ns,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
             ) {
                 Ok(_) => break,
                 Err(actual) => current = actual,
@@ -101,7 +112,10 @@ impl PerformanceMetrics {
         let mut current = self.max_latency_ns.load(Ordering::Relaxed);
         while latency_ns > current {
             match self.max_latency_ns.compare_exchange_weak(
-                current, latency_ns, Ordering::Relaxed, Ordering::Relaxed
+                current,
+                latency_ns,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
             ) {
                 Ok(_) => break,
                 Err(actual) => current = actual,
@@ -151,7 +165,7 @@ impl PerformanceMetrics {
     pub fn update_throughput(&self) {
         let messages = self.messages_processed.load(Ordering::Relaxed);
         let elapsed_secs = self.start_time.elapsed().as_secs();
-        
+
         if elapsed_secs > 0 {
             let mps = messages / elapsed_secs;
             self.messages_per_second.store(mps, Ordering::Relaxed);
@@ -161,17 +175,17 @@ impl PerformanceMetrics {
     /// Get comprehensive metrics snapshot
     pub fn get_metrics_snapshot(&self) -> MetricsSnapshot {
         let histogram = self.latency_histogram.read();
-        
+
         MetricsSnapshot {
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
-                
+
             // Message metrics
             messages_processed: self.messages_processed.load(Ordering::Relaxed),
             messages_per_second: self.messages_per_second.load(Ordering::Relaxed),
-            
+
             // Latency metrics (convert to microseconds for readability)
             min_latency_us: self.min_latency_ns.load(Ordering::Relaxed) / 1000,
             max_latency_us: self.max_latency_ns.load(Ordering::Relaxed) / 1000,
@@ -180,20 +194,20 @@ impl PerformanceMetrics {
             p95_latency_us: histogram.percentile(95.0) / 1000,
             p99_latency_us: histogram.percentile(99.0) / 1000,
             p999_latency_us: histogram.percentile(99.9) / 1000,
-            
+
             // Resource metrics
             memory_usage_mb: (self.memory_usage.load(Ordering::Relaxed) / (1024 * 1024)) as u64,
             cpu_usage_percent: self.cpu_usage_percent.load(Ordering::Relaxed),
-            
+
             // Connection metrics
             active_connections: self.active_connections.load(Ordering::Relaxed),
             failed_connections: self.failed_connections.load(Ordering::Relaxed),
             total_errors: self.total_errors.load(Ordering::Relaxed),
-            
+
             // Network metrics
             bytes_received_mb: self.bytes_received.load(Ordering::Relaxed) / (1024 * 1024),
             bytes_sent_mb: self.bytes_sent.load(Ordering::Relaxed) / (1024 * 1024),
-            
+
             // Uptime
             uptime_seconds: self.start_time.elapsed().as_secs(),
         }
@@ -210,7 +224,7 @@ impl PerformanceMetrics {
         self.total_errors.store(0, Ordering::Relaxed);
         self.bytes_received.store(0, Ordering::Relaxed);
         self.bytes_sent.store(0, Ordering::Relaxed);
-        
+
         if let Some(mut histogram) = self.latency_histogram.try_write() {
             histogram.clear();
         }
@@ -259,11 +273,11 @@ impl LatencyHistogram {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     pub timestamp: u64,
-    
+
     // Message processing
     pub messages_processed: u64,
     pub messages_per_second: u64,
-    
+
     // Latency (microseconds)
     pub min_latency_us: u64,
     pub max_latency_us: u64,
@@ -272,20 +286,20 @@ pub struct MetricsSnapshot {
     pub p95_latency_us: u64,
     pub p99_latency_us: u64,
     pub p999_latency_us: u64,
-    
+
     // Resources
     pub memory_usage_mb: u64,
     pub cpu_usage_percent: u64,
-    
+
     // Connections
     pub active_connections: u64,
     pub failed_connections: u64,
     pub total_errors: u64,
-    
+
     // Network
     pub bytes_received_mb: u64,
     pub bytes_sent_mb: u64,
-    
+
     // System
     pub uptime_seconds: u64,
 }
@@ -294,7 +308,7 @@ impl MetricsSnapshot {
     /// Check if any metrics indicate performance issues
     pub fn has_performance_issues(&self) -> bool {
         self.p99_latency_us > 1000 || // P99 > 1ms
-        self.cpu_usage_percent > 80 || 
+        self.cpu_usage_percent > 80 ||
         self.memory_usage_mb > 8192 || // > 8GB
         self.total_errors > 0
     }
@@ -302,20 +316,28 @@ impl MetricsSnapshot {
     /// Get performance score (0-100, higher is better)
     pub fn performance_score(&self) -> u32 {
         let mut score = 100u32;
-        
+
         // Penalize high latency
-        if self.p99_latency_us > 500 { score -= 20; }
-        if self.p99_latency_us > 1000 { score -= 30; }
-        
+        if self.p99_latency_us > 500 {
+            score -= 20;
+        }
+        if self.p99_latency_us > 1000 {
+            score -= 30;
+        }
+
         // Penalize high CPU usage
-        if self.cpu_usage_percent > 70 { score -= 15; }
-        if self.cpu_usage_percent > 90 { score -= 25; }
-        
+        if self.cpu_usage_percent > 70 {
+            score -= 15;
+        }
+        if self.cpu_usage_percent > 90 {
+            score -= 25;
+        }
+
         // Penalize errors
-        if self.total_errors > 0 { 
+        if self.total_errors > 0 {
             score = score.saturating_sub((self.total_errors as u32).min(50));
         }
-        
+
         score
     }
 }
@@ -324,9 +346,8 @@ impl MetricsSnapshot {
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 
-static GLOBAL_METRICS: Lazy<Arc<PerformanceMetrics>> = Lazy::new(|| {
-    Arc::new(PerformanceMetrics::new())
-});
+static GLOBAL_METRICS: Lazy<Arc<PerformanceMetrics>> =
+    Lazy::new(|| Arc::new(PerformanceMetrics::new()));
 
 /// Get reference to global metrics instance
 pub fn global_metrics() -> &'static Arc<PerformanceMetrics> {
@@ -369,12 +390,12 @@ mod tests {
     #[test]
     fn test_metrics_recording() {
         let metrics = PerformanceMetrics::new();
-        
+
         // Record some latencies
         metrics.record_message_latency(1000); // 1μs
-        metrics.record_message_latency(2000); // 2μs  
-        metrics.record_message_latency(500);  // 0.5μs
-        
+        metrics.record_message_latency(2000); // 2μs
+        metrics.record_message_latency(500); // 0.5μs
+
         let snapshot = metrics.get_metrics_snapshot();
         assert_eq!(snapshot.messages_processed, 3);
         assert_eq!(snapshot.min_latency_us, 0); // 500ns = 0μs when truncated
@@ -411,7 +432,7 @@ mod tests {
             bytes_sent_mb: 50,
             uptime_seconds: 3600,
         };
-        
+
         let score = snapshot.performance_score();
         assert_eq!(score, 100); // Perfect performance
     }

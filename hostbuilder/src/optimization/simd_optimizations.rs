@@ -53,12 +53,12 @@ impl SimdProcessor {
         }
 
         let mut result = Vec::with_capacity(data.len() - window_size + 1);
-        
+
         for i in 0..=(data.len() - window_size) {
             let sum: f32 = data[i..i + window_size].iter().sum();
             result.push(sum / window_size as f32);
         }
-        
+
         result
     }
 
@@ -70,7 +70,7 @@ impl SimdProcessor {
                 return self.vectorized_sum_avx2(data);
             }
         }
-        
+
         data.iter().sum()
     }
 
@@ -95,8 +95,10 @@ mod tests {
 
     #[test]
     fn test_simd_processor_creation() {
-        let processor = SimdProcessor::new();
-        assert!(processor.enabled || !processor.enabled); // Should not panic
+        // `enabled` depends on runtime AVX2 feature detection, so it can't be
+        // asserted to a fixed value portably across CI machines. This test
+        // only verifies construction doesn't panic.
+        let _processor = SimdProcessor::new();
     }
 
     #[test]

@@ -1,20 +1,21 @@
 //! High-performance caching system for DataEngine
-//! 
+//!
 //! Provides multi-level caching with cache-coherent data structures,
 //! memory-mapped configuration, and intelligent prefetching for
 //! ultra-low latency market data access.
 
-use std::hash::Hash;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use crate::infrastructure::logging_facade::MAIN_LOGGER;
+use crate::{log_debug, log_warn};
 use ahash::AHashMap;
 use crossbeam_utils::CachePadded;
 use dashmap::DashMap;
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use once_cell::sync::Lazy;
-use crate::infrastructure::logging_facade::MAIN_LOGGER; use crate::{log_warn, log_debug};
+use std::hash::Hash;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Cache entry with metadata
 #[derive(Debug, Clone)]
@@ -145,9 +146,9 @@ where
 
         let entry = CacheEntry::new(value, ttl);
         let old_value = self.data.insert(key.clone(), entry);
-        
+
         // No need to update access order - creation time is set in CacheEntry::new
-        
+
         if let Some(old_entry) = old_value {
             Some(old_entry.value)
         } else {
@@ -202,7 +203,8 @@ where
 
     pub fn cleanup_expired(&self) -> usize {
         let mut removed = 0;
-        let keys_to_remove: Vec<K> = self.data
+        let keys_to_remove: Vec<K> = self
+            .data
             .iter()
             .filter_map(|entry| {
                 if entry.is_expired() {
@@ -227,14 +229,14 @@ where
         // Find the least recently used entry by timestamp
         let mut oldest_key: Option<K> = None;
         let mut oldest_time = Instant::now();
-        
+
         for entry in self.data.iter() {
             if entry.last_accessed < oldest_time {
                 oldest_time = entry.last_accessed;
                 oldest_key = Some(entry.key().clone());
             }
         }
-        
+
         if let Some(key) = oldest_key {
             if self.data.remove(&key).is_some() {
                 let mut stats = self.stats.write();
@@ -327,16 +329,16 @@ pub struct CachedTrade {
 pub struct MarketDataCache {
     // L1: Hot symbol cache (sub-microsecond access)
     hot_symbols: OptimizedLRUCache<Symbol, CachedOrderBook>,
-    
+
     // L2: Recent trades cache
     recent_trades: OptimizedLRUCache<Symbol, SmallVec<[CachedTrade; 32]>>,
-    
+
     // L3: Symbol metadata cache
     symbol_metadata: DashMap<String, Symbol>,
-    
+
     // Configuration cache
     config_cache: RwLock<AHashMap<String, serde_json::Value>>,
-    
+
     // Cache warming statistics
     warming_stats: AtomicU64,
 }
@@ -359,7 +361,8 @@ impl MarketDataCache {
 
     /// Cache an order book update
     pub fn cache_order_book(&self, order_book: CachedOrderBook, ttl: Option<Duration>) {
-        self.hot_symbols.insert(order_book.symbol.clone(), order_book, ttl);
+        self.hot_symbols
+            .insert(order_book.symbol.clone(), order_book, ttl);
     }
 
     /// Get recent trades for a symbol
@@ -371,14 +374,15 @@ impl MarketDataCache {
     pub fn add_trade(&self, trade: CachedTrade, max_trades: usize) {
         let symbol = trade.symbol.clone();
         let mut trades = self.recent_trades.get(&symbol).unwrap_or_default();
-        
+
         // Add new trade and maintain size limit
         trades.push(trade);
         if trades.len() > max_trades {
             trades.remove(0);
         }
-        
-        self.recent_trades.insert(symbol, trades, Some(Duration::from_secs(300))); // 5 minutes TTL
+
+        self.recent_trades
+            .insert(symbol, trades, Some(Duration::from_secs(300))); // 5 minutes TTL
     }
 
     /// Cache symbol metadata for fast lookups
@@ -388,20 +392,26 @@ impl MarketDataCache {
 
     /// Get symbol from cache
     pub fn get_symbol(&self, symbol_str: &str) -> Option<Symbol> {
-        self.symbol_metadata.get(symbol_str).map(|entry| entry.clone())
+        self.symbol_metadata
+            .get(symbol_str)
+            .map(|entry| entry.clone())
     }
 
     /// Cache configuration values
     pub fn cache_config<T: Serialize>(&self, key: &str, value: &T) {
         if let Ok(json_value) = serde_json::to_value(value) {
-            self.config_cache.write().insert(key.to_string(), json_value);
+            self.config_cache
+                .write()
+                .insert(key.to_string(), json_value);
         }
     }
 
     /// Get cached configuration
     pub fn get_config<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
         let cache = self.config_cache.read();
-        cache.get(key).and_then(|v| serde_json::from_value(v.clone()).ok())
+        cache
+            .get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     /// Pre-warm cache with commonly used symbols
@@ -428,18 +438,28 @@ impl MarketDataCache {
         }
 
         let elapsed = start.elapsed();
-        self.warming_stats.store(elapsed.as_nanos() as u64, Ordering::Relaxed);
-        
-        log_debug!(MAIN_LOGGER, "Warmed cache with {} symbols in {:?}", warmed, elapsed);
+        self.warming_stats
+            .store(elapsed.as_nanos() as u64, Ordering::Relaxed);
+
+        log_debug!(
+            MAIN_LOGGER,
+            "Warmed cache with {} symbols in {:?}",
+            warmed,
+            elapsed
+        );
     }
 
     /// Clean up expired entries across all caches
     pub fn cleanup(&self) {
         let hot_removed = self.hot_symbols.cleanup_expired();
         let trades_removed = self.recent_trades.cleanup_expired();
-        
-        log_debug!(MAIN_LOGGER, "Cache cleanup: removed {} hot symbols, {} trade entries", 
-               hot_removed, trades_removed);
+
+        log_debug!(
+            MAIN_LOGGER,
+            "Cache cleanup: removed {} hot symbols, {} trade entries",
+            hot_removed,
+            trades_removed
+        );
     }
 
     /// Get comprehensive cache statistics
@@ -474,15 +494,14 @@ pub struct CacheSystemStats {
 
 impl CacheSystemStats {
     pub fn total_entries(&self) -> usize {
-        self.hot_symbols_stats.entries + 
-        self.recent_trades_stats.entries + 
-        self.symbol_metadata_entries + 
-        self.config_cache_entries
+        self.hot_symbols_stats.entries
+            + self.recent_trades_stats.entries
+            + self.symbol_metadata_entries
+            + self.config_cache_entries
     }
 
     pub fn total_memory_usage(&self) -> usize {
-        self.hot_symbols_stats.memory_usage_bytes + 
-        self.recent_trades_stats.memory_usage_bytes
+        self.hot_symbols_stats.memory_usage_bytes + self.recent_trades_stats.memory_usage_bytes
     }
 
     pub fn average_hit_rate(&self) -> f64 {
@@ -517,31 +536,39 @@ impl CacheMaintenanceService {
     }
 
     pub async fn start(&self) {
-        if self.is_running.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .is_running
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             log_warn!(MAIN_LOGGER, "Cache maintenance service already running");
             return;
         }
 
         log_debug!(MAIN_LOGGER, "Starting cache maintenance service");
-        
+
         let cleanup_interval = self.cleanup_interval;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
-            
+
             loop {
                 interval.tick().await;
-                
+
                 // Perform cache maintenance
                 let start = Instant::now();
                 global_cache().cleanup();
                 let elapsed = start.elapsed();
-                
+
                 log_debug!(MAIN_LOGGER, "Cache maintenance completed in {:?}", elapsed);
-                
+
                 // Log cache statistics periodically
                 let stats = global_cache().get_cache_stats();
-                log_debug!(MAIN_LOGGER, "Cache stats: {} total entries, {:.1}% avg hit rate", 
-                       stats.total_entries(), stats.average_hit_rate());
+                log_debug!(
+                    MAIN_LOGGER,
+                    "Cache stats: {} total entries, {:.1}% avg hit rate",
+                    stats.total_entries(),
+                    stats.average_hit_rate()
+                );
             }
         });
     }
@@ -549,83 +576,6 @@ impl CacheMaintenanceService {
     pub fn stop(&self) {
         self.is_running.store(0, Ordering::SeqCst);
         log_debug!(MAIN_LOGGER, "Cache maintenance service stopped");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn test_optimized_lru_cache() {
-        let cache = OptimizedLRUCache::new(3);
-        
-        // Test basic operations
-        cache.insert("key1".to_string(), "value1".to_string(), None);
-        cache.insert("key2".to_string(), "value2".to_string(), None);
-        cache.insert("key3".to_string(), "value3".to_string(), None);
-        
-        assert_eq!(cache.len(), 3);
-        assert_eq!(cache.get(&"key1".to_string()), Some("value1".to_string()));
-        
-        // Test eviction
-        cache.insert("key4".to_string(), "value4".to_string(), None);
-        assert_eq!(cache.len(), 3);
-        
-        let stats = cache.get_stats();
-        assert!(stats.hit_rate > 0.0);
-    }
-
-    #[test]
-    fn test_symbol_cache() {
-        let symbol = Symbol::new("KRAKEN", "BTC", "USD");
-        assert_eq!(symbol.to_pair(), "BTC/USD");
-        assert_eq!(symbol.cache_key(), "KRAKEN:BTC:USD");
-        
-        let symbol2 = Symbol::from_pair("KRAKEN", "ETH/USD").unwrap();
-        assert_eq!(symbol2.base, "ETH");
-        assert_eq!(symbol2.quote, "USD");
-    }
-
-    #[test]
-    fn test_market_data_cache() {
-        let cache = MarketDataCache::new(100, 50);
-        let symbol = Symbol::new("KRAKEN", "BTC", "USD");
-        
-        let order_book = CachedOrderBook {
-            symbol: symbol.clone(),
-            bids: vec![(50000.0, 1.5), (49999.0, 2.0)],
-            asks: vec![(50001.0, 1.0), (50002.0, 1.5)],
-            timestamp: 1234567890,
-            sequence: 1,
-        };
-        
-        cache.cache_order_book(order_book.clone(), None);
-        
-        let cached = cache.get_order_book(&symbol).unwrap();
-        assert_eq!(cached.bids.len(), 2);
-        assert_eq!(cached.asks.len(), 2);
-        
-        let stats = cache.get_cache_stats();
-        assert!(stats.total_entries() > 0);
-    }
-
-    #[tokio::test]
-    async fn test_cache_maintenance() {
-        let service = CacheMaintenanceService::new(Duration::from_millis(100));
-        service.start().await;
-        
-        // Let it run for a bit
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        
-        service.stop();
-        
-        // Give it time to process the stop signal
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        
-        // Test passes if we got here without panicking
-        assert!(true);
     }
 }
 
@@ -651,3 +601,78 @@ impl CacheManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_optimized_lru_cache() {
+        let cache = OptimizedLRUCache::new(3);
+
+        // Test basic operations
+        cache.insert("key1".to_string(), "value1".to_string(), None);
+        cache.insert("key2".to_string(), "value2".to_string(), None);
+        cache.insert("key3".to_string(), "value3".to_string(), None);
+
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.get(&"key1".to_string()), Some("value1".to_string()));
+
+        // Test eviction
+        cache.insert("key4".to_string(), "value4".to_string(), None);
+        assert_eq!(cache.len(), 3);
+
+        let stats = cache.get_stats();
+        assert!(stats.hit_rate > 0.0);
+    }
+
+    #[test]
+    fn test_symbol_cache() {
+        let symbol = Symbol::new("KRAKEN", "BTC", "USD");
+        assert_eq!(symbol.to_pair(), "BTC/USD");
+        assert_eq!(symbol.cache_key(), "KRAKEN:BTC:USD");
+
+        let symbol2 = Symbol::from_pair("KRAKEN", "ETH/USD").unwrap();
+        assert_eq!(symbol2.base, "ETH");
+        assert_eq!(symbol2.quote, "USD");
+    }
+
+    #[test]
+    fn test_market_data_cache() {
+        let cache = MarketDataCache::new(100, 50);
+        let symbol = Symbol::new("KRAKEN", "BTC", "USD");
+
+        let order_book = CachedOrderBook {
+            symbol: symbol.clone(),
+            bids: vec![(50000.0, 1.5), (49999.0, 2.0)],
+            asks: vec![(50001.0, 1.0), (50002.0, 1.5)],
+            timestamp: 1234567890,
+            sequence: 1,
+        };
+
+        cache.cache_order_book(order_book.clone(), None);
+
+        let cached = cache.get_order_book(&symbol).unwrap();
+        assert_eq!(cached.bids.len(), 2);
+        assert_eq!(cached.asks.len(), 2);
+
+        let stats = cache.get_cache_stats();
+        assert!(stats.total_entries() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_maintenance() {
+        let service = CacheMaintenanceService::new(Duration::from_millis(100));
+        service.start().await;
+
+        // Let it run for a bit
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        service.stop();
+
+        // Give it time to process the stop signal
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Test passes if we got here without panicking
+    }
+}

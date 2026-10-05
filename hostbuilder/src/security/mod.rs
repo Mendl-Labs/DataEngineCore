@@ -1,5 +1,5 @@
 //! Security module
-//! 
+//!
 //! This module contains all security-related functionality including:
 //! - Security manager and configuration
 //! - Input validation and error handling  
@@ -15,5 +15,5 @@ pub mod monitoring;
 pub use config::*;
 pub use error_handling::*;
 pub use input_validation::*;
-pub use manager::{SecurityManager, SecurityConfig};
+pub use manager::{SecurityConfig, SecurityManager};
 pub use monitoring::*;

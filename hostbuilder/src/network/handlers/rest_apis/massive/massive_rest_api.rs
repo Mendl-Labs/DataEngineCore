@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::env;
 
 use crate::infrastructure::logging_facade::MAIN_LOGGER;
-use crate::{log_info, log_error, log_debug};
+use crate::{log_debug, log_error, log_info};
 
 // Base URL is read from MASSIVE_API_BASE_URL env var (defaults to api.polygon.io)
 
@@ -109,11 +109,19 @@ impl MassiveRestHandler {
         if api_key.is_empty() {
             return Err(anyhow!("MASSIVE_API_KEY is set but empty"));
         }
-        let base_url = env::var("MASSIVE_API_BASE_URL")
-            .unwrap_or_else(|_| "https://api.polygon.io".into());
+        let base_url =
+            env::var("MASSIVE_API_BASE_URL").unwrap_or_else(|_| "https://api.polygon.io".into());
         let client = Client::new();
-        log_info!(MAIN_LOGGER, "MassiveRestHandler initialized (base_url={})", base_url);
-        Ok(Self { api_key, base_url, client })
+        log_info!(
+            MAIN_LOGGER,
+            "MassiveRestHandler initialized (base_url={})",
+            base_url
+        );
+        Ok(Self {
+            api_key,
+            base_url,
+            client,
+        })
     }
 
     fn bearer_headers(&self) -> Result<HeaderMap> {
@@ -154,13 +162,14 @@ impl MassiveRestHandler {
 
         let mut all_results: Vec<AggResult> = Vec::new();
         let mut url = first_url;
-        let mut final_status = String::new();
-        let mut final_ticker = ticker.to_string();
+        let mut final_status: String;
+        let mut final_ticker: String;
 
         loop {
             log_debug!(MAIN_LOGGER, "GET {}", url);
             let headers = self.bearer_headers()?;
-            let response = self.client
+            let response = self
+                .client
                 .get(&url)
                 .headers(headers)
                 .send()
@@ -217,7 +226,8 @@ impl MassiveRestHandler {
         for symbol in symbols {
             let ticker = Self::symbol_to_ticker(symbol);
             results.push(
-                self.get_crypto_aggregates(&ticker, multiplier, timespan, from, to).await,
+                self.get_crypto_aggregates(&ticker, multiplier, timespan, from, to)
+                    .await,
             );
         }
         results
@@ -235,7 +245,8 @@ impl MassiveRestHandler {
         );
         log_debug!(MAIN_LOGGER, "GET {}", url);
         let headers = self.bearer_headers()?;
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(headers)
             .send()
@@ -254,7 +265,11 @@ impl MassiveRestHandler {
             .await
             .map_err(|e| anyhow!("Failed to parse snapshot response: {}", e))?;
 
-        log_info!(MAIN_LOGGER, "Snapshot fetched for {} tickers", result.tickers.len());
+        log_info!(
+            MAIN_LOGGER,
+            "Snapshot fetched for {} tickers",
+            result.tickers.len()
+        );
         Ok(result)
     }
 
@@ -270,7 +285,8 @@ impl MassiveRestHandler {
         loop {
             log_debug!(MAIN_LOGGER, "GET {}", url);
             let headers = self.bearer_headers()?;
-            let response = self.client
+            let response = self
+                .client
                 .get(&url)
                 .headers(headers)
                 .send()
@@ -280,7 +296,12 @@ impl MassiveRestHandler {
             let status = response.status();
             if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
-                log_error!(MAIN_LOGGER, "Massive ticker list error {}: {}", status, body);
+                log_error!(
+                    MAIN_LOGGER,
+                    "Massive ticker list error {}: {}",
+                    status,
+                    body
+                );
                 return Err(anyhow!("Massive ticker list returned {}: {}", status, body));
             }
 
@@ -299,7 +320,11 @@ impl MassiveRestHandler {
             }
         }
 
-        log_info!(MAIN_LOGGER, "Fetched {} tickers from Massive", tickers.len());
+        log_info!(
+            MAIN_LOGGER,
+            "Fetched {} tickers from Massive",
+            tickers.len()
+        );
         Ok(tickers)
     }
 }

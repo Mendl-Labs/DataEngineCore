@@ -1,5 +1,5 @@
 //! Data module
-//! 
+//!
 //! This module contains all data handling functionality including:
 //! - Caching strategies and implementations
 //! - Data pipeline processing
@@ -15,6 +15,6 @@ pub mod pipeline;
 // Re-export commonly used items
 pub use caching::*;
 #[cfg(feature = "database")]
-pub use get_info::{get_exchange, get_securities, get_orderbooks};
+pub use get_info::{get_exchange, get_orderbooks, get_securities};
 pub use order_book::*;
 pub use pipeline::*;

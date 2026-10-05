@@ -1,5 +1,5 @@
 //! Optimization module
-//! 
+//!
 //! This module contains performance optimization functionality including:
 //! - SIMD optimizations for numerical processing
 //! - Kernel bypass techniques for low-latency operations

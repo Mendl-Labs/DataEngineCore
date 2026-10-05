@@ -1,7 +1,7 @@
+use crate::infrastructure::logging_facade::MASSIVE_LOGGER;
+use crate::{log_debug, log_info};
 use dashmap::DashMap;
 use protocol::broker::messages::Bar;
-use crate::infrastructure::logging_facade::MASSIVE_LOGGER;
-use crate::{log_info, log_debug};
 
 // =============================================================================
 // Internal bar accumulation window
@@ -18,7 +18,8 @@ struct BarWindow {
 }
 
 impl BarWindow {
-    fn new(price: f64, size: f64, window_start_ms: i64) -> Self {        Self {
+    fn new(price: f64, size: f64, window_start_ms: i64) -> Self {
+        Self {
             open: price,
             high: price,
             low: price,
@@ -132,13 +133,31 @@ impl BarAggregator {
                 trade_count: old_trade_count,
                 interval_secs: self.interval_secs(),
             };
-            log_debug!(MASSIVE_LOGGER, "BarAggregator: bar completed for {}:{} O={} H={} L={} C={} V={} trades={}", symbol, exchange, old_open, old_high, old_low, old_close, old_volume, old_trade_count);
+            log_debug!(
+                MASSIVE_LOGGER,
+                "BarAggregator: bar completed for {}:{} O={} H={} L={} C={} V={} trades={}",
+                symbol,
+                exchange,
+                old_open,
+                old_high,
+                old_low,
+                old_close,
+                old_volume,
+                old_trade_count
+            );
             return Some(completed_bar);
         }
 
         // No existing window — create one (first tick for this symbol).
-        log_info!(MASSIVE_LOGGER, "BarAggregator: new symbol registered: {}:{} (interval={}ms)", symbol, exchange, self.interval_ms);
-        self.windows.insert(key, BarWindow::new(price, size, window_start));
+        log_info!(
+            MASSIVE_LOGGER,
+            "BarAggregator: new symbol registered: {}:{} (interval={}ms)",
+            symbol,
+            exchange,
+            self.interval_ms
+        );
+        self.windows
+            .insert(key, BarWindow::new(price, size, window_start));
         None
     }
 }

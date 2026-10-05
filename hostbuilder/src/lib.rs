@@ -27,18 +27,19 @@ pub mod network;
 pub mod optimization;
 
 // Legacy modules (to be moved/removed)
+#[cfg(test)]
 pub mod tests;
 
 // Re-export the main application components for backward compatibility
-pub use core::{HostedObject, HostedObjectTrait};
 pub use core::{
-    TenantSubscriptionLimiter, SubscriptionTier, TenantSubscriptionStats,
-    GlobalSubscriptionStats, SubscriptionValidation, TierLimits,
+    GlobalSubscriptionStats, SubscriptionTier, SubscriptionValidation, TenantSubscriptionLimiter,
+    TenantSubscriptionStats, TierLimits,
 };
+pub use core::{HostedObject, HostedObjectTrait};
 pub use network::api_endpoints::start_api_server;
 
 // Re-export commonly used items from each module
 #[cfg(feature = "database")]
-pub use data::{get_exchange, get_securities, get_orderbooks};
+pub use data::{get_exchange, get_orderbooks, get_securities};
 pub use infrastructure::logging_facade::MAIN_LOGGER;
-pub use security::{SecurityManager, SecurityConfig};
+pub use security::{SecurityConfig, SecurityManager};

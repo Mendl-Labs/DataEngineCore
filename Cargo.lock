@@ -322,7 +322,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "ultra-logger",
+ "ultra-logger 0.1.0",
 ]
 
 [[package]]
@@ -1119,7 +1119,7 @@ dependencies = [
  "toml",
  "tower",
  "tower-http",
- "ultra-logger",
+ "ultra-logger 0.1.0",
  "url",
  "urlencoding",
  "uuid",
@@ -1959,7 +1959,7 @@ dependencies = [
  "rayon",
  "serde",
  "tokio",
- "ultra-logger",
+ "ultra-logger 0.1.0",
  "winapi",
 ]
 
@@ -2199,7 +2199,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "ultra-logger",
+ "ultra-logger 0.1.0 (git+https://github.com/Mendl-Labs/LoggingEngine?tag=v0.1.0)",
  "uuid",
 ]
 
@@ -2241,7 +2241,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "ultra-logger",
+ "ultra-logger 0.1.0 (git+https://github.com/Mendl-Labs/LoggingEngine?tag=v0.1.0)",
  "winapi",
 ]
 
@@ -2938,7 +2938,7 @@ dependencies = [
  "protocol",
  "spin_sleep",
  "tokio",
- "ultra-logger",
+ "ultra-logger 0.1.0 (git+https://github.com/Mendl-Labs/LoggingEngine?tag=v0.1.0)",
 ]
 
 [[package]]
@@ -3438,6 +3438,21 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "ultra-logger"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "flume",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "ultra-logger"
+version = "0.1.0"
+source = "git+https://github.com/Mendl-Labs/LoggingEngine?tag=v0.1.0#c34abcf1d7f3fed6ecdf7c1f01346d3d8a91be69"
 dependencies = [
  "async-trait",
  "chrono",

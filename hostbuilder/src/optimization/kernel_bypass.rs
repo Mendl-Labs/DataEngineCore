@@ -1,31 +1,32 @@
 //! Kernel bypass networking for sub-microsecond latency trading
-//! 
+//!
 //! Provides zero-copy, kernel-bypass networking using io_uring on Linux
 //! and high-performance socket optimizations on Windows for ultra-low latency.
 
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use anyhow::{Result, anyhow};
-use crate::infrastructure::logging_facade::MAIN_LOGGER; use crate::log_info;
-use socket2::{Socket, Domain, Type, Protocol};
+use crate::infrastructure::logging_facade::MAIN_LOGGER;
+use crate::log_info;
+use anyhow::{anyhow, Result};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(target_os = "linux")]
-use io_uring::{IoUring, opcode, types};
+use io_uring::{opcode, types, IoUring};
 
 /// Ultra-high performance kernel bypass manager
 pub struct KernelBypassManager {
     #[cfg(target_os = "linux")]
     ring: Option<IoUring>,
-    
+
     // Performance counters
     packets_processed: AtomicU64,
     bytes_processed: AtomicU64,
     processing_time_ns: AtomicU64,
-    
+
     // Configuration
     buffer_size: usize,
     _queue_depth: u32,
-    
+
     is_initialized: AtomicBool,
 }
 
@@ -41,7 +42,7 @@ impl KernelBypassManager {
             _queue_depth: 256,
             is_initialized: AtomicBool::new(false),
         };
-        
+
         manager.initialize().await?;
         Ok(manager)
     }
@@ -55,14 +56,22 @@ impl KernelBypassManager {
             match IoUring::new(queue_depth) {
                 Ok(ring) => {
                     self.ring = Some(ring);
-                    log_info!(MAIN_LOGGER, "io_uring initialized with queue depth {}", queue_depth);
+                    log_info!(
+                        MAIN_LOGGER,
+                        "io_uring initialized with queue depth {}",
+                        queue_depth
+                    );
                 }
                 Err(e) => {
-                    log_info!(MAIN_LOGGER, "Failed to initialize io_uring: {}, falling back to optimized sockets", e);
+                    log_info!(
+                        MAIN_LOGGER,
+                        "Failed to initialize io_uring: {}, falling back to optimized sockets",
+                        e
+                    );
                 }
             }
         }
-        
+
         self.is_initialized.store(true, Ordering::Release);
         log_info!(MAIN_LOGGER, "Kernel bypass manager initialized");
         Ok(())
@@ -71,16 +80,16 @@ impl KernelBypassManager {
     /// Create ultra-optimized socket for trading
     pub fn create_trading_socket(&self, _addr: SocketAddr) -> Result<Socket> {
         let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
-        
+
         // Ultra-aggressive TCP optimizations for sub-microsecond latency
         socket.set_nodelay(true)?; // Disable Nagle's algorithm
         socket.set_nonblocking(true)?;
-        
+
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::io::AsRawFd;
             let fd = socket.as_raw_fd();
-            
+
             // TCP_QUICKACK - Send ACKs immediately
             unsafe {
                 let val: libc::c_int = 1;
@@ -92,7 +101,7 @@ impl KernelBypassManager {
                     std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                 );
             }
-            
+
             // TCP_USER_TIMEOUT - Aggressive timeout
             unsafe {
                 let val: libc::c_uint = 100; // 100ms timeout
@@ -104,7 +113,7 @@ impl KernelBypassManager {
                     std::mem::size_of::<libc::c_uint>() as libc::socklen_t,
                 );
             }
-            
+
             // SO_BUSY_POLL - Hardware interrupt bypass
             unsafe {
                 let val: libc::c_uint = 50; // 50 microseconds
@@ -117,21 +126,21 @@ impl KernelBypassManager {
                 );
             }
         }
-        
+
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::io::AsRawSocket;
-            
+
             let _socket_handle = socket.as_raw_socket();
-            
+
             // Windows-specific optimizations - use basic socket options
             // Windows doesn't need the same low-level optimizations as Linux
         }
-        
+
         // Set large buffers for high throughput
         socket.set_recv_buffer_size(self.buffer_size)?;
         socket.set_send_buffer_size(self.buffer_size)?;
-        
+
         Ok(socket)
     }
 
@@ -139,32 +148,36 @@ impl KernelBypassManager {
     #[cfg(target_os = "linux")]
     pub async fn zero_copy_recv(&mut self, socket_fd: i32, buffer: &mut [u8]) -> Result<usize> {
         let start = self.hardware_timestamp();
-        
+
         if let Some(ring) = &mut self.ring {
             let recv_e = opcode::Recv::new(
                 types::Fd(socket_fd),
                 buffer.as_mut_ptr(),
                 buffer.len() as u32,
             );
-            
+
             unsafe {
                 ring.submission()
                     .push(&recv_e.build().user_data(0x42))
                     .map_err(|e| anyhow!("Failed to push recv operation: {}", e))?;
             }
-            
+
             ring.submit()?;
-            
-            let cqe = ring.completion().next().ok_or_else(|| anyhow!("No completion event"))?;
+
+            let cqe = ring
+                .completion()
+                .next()
+                .ok_or_else(|| anyhow!("No completion event"))?;
             let bytes_received = cqe.result() as usize;
-            
+
             // Update performance counters
             self.packets_processed.fetch_add(1, Ordering::Relaxed);
-            self.bytes_processed.fetch_add(bytes_received as u64, Ordering::Relaxed);
-            
+            self.bytes_processed
+                .fetch_add(bytes_received as u64, Ordering::Relaxed);
+
             let elapsed = self.hardware_timestamp() - start;
             self.processing_time_ns.store(elapsed, Ordering::Relaxed);
-            
+
             Ok(bytes_received)
         } else {
             Err(anyhow!("io_uring not initialized"))
@@ -175,27 +188,28 @@ impl KernelBypassManager {
     #[cfg(not(target_os = "linux"))]
     pub async fn zero_copy_recv(&mut self, socket: &Socket, buffer: &mut [u8]) -> Result<usize> {
         let start = self.hardware_timestamp();
-        
+
         // Use non-blocking receive with polling
         // Convert buffer to MaybeUninit for compatibility
         let uninit_buffer = unsafe {
             std::slice::from_raw_parts_mut(
                 buffer.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>,
-                buffer.len()
+                buffer.len(),
             )
         };
-        
+
         match socket.recv(uninit_buffer) {
             Ok(bytes_received) => {
                 self.packets_processed.fetch_add(1, Ordering::Relaxed);
-                self.bytes_processed.fetch_add(bytes_received as u64, Ordering::Relaxed);
-                
+                self.bytes_processed
+                    .fetch_add(bytes_received as u64, Ordering::Relaxed);
+
                 let elapsed = self.hardware_timestamp() - start;
                 self.processing_time_ns.store(elapsed, Ordering::Relaxed);
-                
+
                 Ok(bytes_received)
             }
-            Err(e) => Err(anyhow!("Recv failed: {}", e))
+            Err(e) => Err(anyhow!("Recv failed: {}", e)),
         }
     }
 
@@ -215,17 +229,18 @@ impl KernelBypassManager {
     /// Process data using zero-copy operations
     pub async fn process_zero_copy(&self, data: &[u8]) -> Result<()> {
         let start = self.hardware_timestamp();
-        
+
         // Simulate zero-copy processing
         std::hint::black_box(data);
-        
+
         // Update performance counters
         self.packets_processed.fetch_add(1, Ordering::Relaxed);
-        self.bytes_processed.fetch_add(data.len() as u64, Ordering::Relaxed);
-        
+        self.bytes_processed
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
+
         let elapsed = self.hardware_timestamp() - start;
         self.processing_time_ns.store(elapsed, Ordering::Relaxed);
-        
+
         Ok(())
     }
 
@@ -267,7 +282,7 @@ impl ZeroCopyMessageBuffer {
         #[cfg(unix)]
         {
             use std::ptr;
-            
+
             let ptr = unsafe {
                 libc::mmap(
                     ptr::null_mut(),
@@ -278,16 +293,16 @@ impl ZeroCopyMessageBuffer {
                     0,
                 ) as *mut u8
             };
-            
+
             if ptr == libc::MAP_FAILED as *mut u8 {
                 return Err(anyhow!("mmap failed"));
             }
-            
+
             // Lock pages in memory to prevent swapping
             unsafe {
                 libc::mlock(ptr as *const libc::c_void, size);
             }
-            
+
             Ok(Self {
                 ptr,
                 size: 0,
@@ -300,11 +315,11 @@ impl ZeroCopyMessageBuffer {
             // Fallback to heap allocation with alignment
             let layout = std::alloc::Layout::from_size_align(size, 64)?; // Cache line aligned
             let ptr = unsafe { std::alloc::alloc(layout) };
-            
+
             if ptr.is_null() {
                 return Err(anyhow!("Failed to allocate aligned memory"));
             }
-            
+
             Ok(Self {
                 ptr,
                 size: 0,
@@ -352,7 +367,7 @@ impl Drop for ZeroCopyMessageBuffer {
                 unsafe { std::alloc::dealloc(self.ptr, layout) };
             }
         }
-        
+
         #[cfg(not(unix))]
         {
             let layout = std::alloc::Layout::from_size_align(self.capacity, 64).unwrap();

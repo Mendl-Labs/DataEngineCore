@@ -1,17 +1,20 @@
 //! Centralized error handling and resilience patterns for DataEngine
-//! 
+//!
 //! This module provides:
 //! - Circuit breaker pattern for external dependencies
 //! - Retry mechanisms with exponential backoff
 //! - Error categorization and recovery strategies
 //! - Performance-aware error handling
 
+use crate::{infrastructure::logging_facade::MAIN_LOGGER, log_error, log_info, log_warn};
 use anyhow::{anyhow, Result};
 use fastrand;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-use crate::{infrastructure::logging_facade::MAIN_LOGGER, log_warn, log_error, log_info};
 
 /// Circuit breaker states
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,7 +36,11 @@ pub struct CircuitBreaker {
 }
 
 impl CircuitBreaker {
-    pub fn new(failure_threshold: u64, recovery_timeout: Duration, reset_timeout: Duration) -> Self {
+    pub fn new(
+        failure_threshold: u64,
+        recovery_timeout: Duration,
+        reset_timeout: Duration,
+    ) -> Self {
         Self {
             state: Arc::new(AtomicU64::new(0)), // Start closed
             failure_count: Arc::new(AtomicU64::new(0)),
@@ -63,7 +70,7 @@ impl CircuitBreaker {
         if self.get_state() == CircuitState::Open {
             let now = Instant::now().elapsed().as_millis() as u64;
             let last_failure = self.last_failure_time.load(Ordering::Acquire);
-            
+
             if now - last_failure < self.recovery_timeout.as_millis() as u64 {
                 return Err(anyhow!("Circuit breaker is OPEN - service unavailable"));
             } else {
@@ -88,7 +95,7 @@ impl CircuitBreaker {
     fn on_success(&self) {
         let current_state = self.get_state();
         self.success_count.fetch_add(1, Ordering::Relaxed);
-        
+
         match current_state {
             CircuitState::HalfOpen => {
                 // Reset to closed state
@@ -111,7 +118,11 @@ impl CircuitBreaker {
 
         if failures >= self.failure_threshold {
             self.state.store(1, Ordering::Release); // Open
-            log_warn!(MAIN_LOGGER, "Circuit breaker opened after {} failures", failures);
+            log_warn!(
+                MAIN_LOGGER,
+                "Circuit breaker opened after {} failures",
+                failures
+            );
         }
     }
 
@@ -189,7 +200,9 @@ impl ResilientExecutor {
 
     pub async fn execute<F, T, E>(&self, mut operation: F) -> Result<T>
     where
-        F: FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<T, E>> + Send>>,
+        F: FnMut() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::result::Result<T, E>> + Send>,
+        >,
         E: std::fmt::Display + Send + Sync + 'static,
     {
         let mut attempt = 1;
@@ -200,22 +213,31 @@ impl ResilientExecutor {
             match self.circuit_breaker.call(operation()).await {
                 Ok(result) => return Ok(result),
                 Err(e) if attempt >= self.retry_config.max_attempts => {
-                    log_error!(MAIN_LOGGER, "Operation failed after {} attempts: {}", attempt, e);
+                    log_error!(
+                        MAIN_LOGGER,
+                        "Operation failed after {} attempts: {}",
+                        attempt,
+                        e
+                    );
                     return Err(e);
                 }
                 Err(e) => {
-                    log_warn!(MAIN_LOGGER, "Attempt {} failed: {}, retrying in {:?}", attempt, e, delay);
-                    
+                    log_warn!(
+                        MAIN_LOGGER,
+                        "Attempt {} failed: {}, retrying in {:?}",
+                        attempt,
+                        e,
+                        delay
+                    );
+
                     // Sleep with exponential backoff
                     sleep(delay).await;
-                    
+
                     // Calculate next delay
-                    delay = Duration::from_millis(
-                        std::cmp::min(
-                            (delay.as_millis() as f64 * self.retry_config.backoff_multiplier) as u64,
-                            self.retry_config.max_delay.as_millis() as u64
-                        )
-                    );
+                    delay = Duration::from_millis(std::cmp::min(
+                        (delay.as_millis() as f64 * self.retry_config.backoff_multiplier) as u64,
+                        self.retry_config.max_delay.as_millis() as u64,
+                    ));
 
                     // Add jitter to prevent thundering herd
                     if self.retry_config.jitter {
@@ -256,25 +278,25 @@ pub trait CategorizeError {
 pub enum DataEngineError {
     #[error("WebSocket connection failed: {0}")]
     WebSocketConnection(String),
-    
+
     #[error("Message parsing failed: {0}")]
     MessageParsing(String),
-    
+
     #[error("Database operation failed: {0}")]
     Database(String),
-    
+
     #[error("Redis operation failed: {0}")]
     Redis(String),
-    
+
     #[error("Publisher error: {0}")]
     Publisher(String),
-    
+
     #[error("Configuration error: {0}")]
     Configuration(String),
-    
+
     #[error("Rate limit exceeded: {0}")]
     RateLimit(String),
-    
+
     #[error("Authentication failed: {0}")]
     Authentication(String),
 }
@@ -297,6 +319,12 @@ impl CategorizeError for DataEngineError {
 /// Global error handler for the DataEngine system
 pub struct ErrorHandler {
     metrics: ErrorMetrics,
+}
+
+impl Default for ErrorHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ErrorHandler {
@@ -331,7 +359,13 @@ impl ErrorHandler {
                 // Could trigger circuit breaker
             }
             _ => {
-                log_error!(MAIN_LOGGER, "Error in {}: {} (category: {:?})", context, error, category);
+                log_error!(
+                    MAIN_LOGGER,
+                    "Error in {}: {} (category: {:?})",
+                    context,
+                    error,
+                    category
+                );
             }
         }
 
@@ -351,6 +385,12 @@ pub struct ErrorMetrics {
     network_errors: AtomicU64,
     auth_errors: AtomicU64,
     validation_errors: AtomicU64,
+}
+
+impl Default for ErrorMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ErrorMetrics {
@@ -406,44 +446,50 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker_basic_flow() {
         let cb = CircuitBreaker::new(3, Duration::from_millis(100), Duration::from_secs(1));
-        
+
         // Should start closed
         assert_eq!(cb.get_state(), CircuitState::Closed);
-        
+
         // Simulate failures
         for i in 0..3 {
             let result = cb.call(async { Err::<(), &str>("test error") }).await;
             assert!(result.is_err());
-            
+
             if i < 2 {
                 assert_eq!(cb.get_state(), CircuitState::Closed);
             }
         }
-        
+
         // Should be open now
         assert_eq!(cb.get_state(), CircuitState::Open);
     }
 
     #[tokio::test]
     async fn test_resilient_executor() {
-        let cb = Arc::new(CircuitBreaker::new(3, Duration::from_millis(10), Duration::from_secs(1)));
+        let cb = Arc::new(CircuitBreaker::new(
+            3,
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        ));
         let retry_config = RetryConfig::new_fast();
         let executor = ResilientExecutor::new(cb, retry_config);
-        
+
         let call_count = Arc::new(AtomicU32::new(0));
         let count_clone: Arc<AtomicU32> = Arc::clone(&call_count);
-        
-        let result = executor.execute(move || {
-            let count = count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-            Box::pin(async move {
-                if count < 3 {
-                    Err("failing")
-                } else {
-                    Ok("success")
-                }
+
+        let result = executor
+            .execute(move || {
+                let count = count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+                Box::pin(async move {
+                    if count < 3 {
+                        Err("failing")
+                    } else {
+                        Ok("success")
+                    }
+                })
             })
-        }).await;
-        
+            .await;
+
         assert!(result.is_ok());
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
